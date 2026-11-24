@@ -10,6 +10,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--adb", default="adb")
+    parser.add_argument("--range", action="store_true", help="Проверить раннее открытие файлов из range_fixture.py")
     parser.add_argument("--host-port", type=int, default=18763,
                         help="Порт изолированного serve_fixture.py на компьютере")
     args = parser.parse_args()
@@ -32,7 +33,7 @@ def main() -> int:
         subprocess.run(command + ["shell", "-T", "run-as ru.polka.reader sh -c 'umask 077; mkdir -p cache && cat > cache/polka-live-qa'"],
                        input=password.encode("utf-8"), check=True)
         result = subprocess.run(command + ["shell", "am", "instrument", "-w", "-e", "class",
-                                "ru.polka.reader.data.LiveDataTest",
+                                "ru.polka.reader.data.LiveRangeTest" if args.range else "ru.polka.reader.data.LiveDataTest",
                                 "ru.polka.reader.test/androidx.test.runner.AndroidJUnitRunner"],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         report = result.stdout.decode("utf-8", errors="replace")

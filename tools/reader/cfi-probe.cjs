@@ -22,7 +22,7 @@ async function sampleBook(rtl = false) {
     esc('Тихий ветер шевелил страницы раскрытой книги. '.repeat(5)) + '</p>').join('');
   zip.file('chapter.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Глава</title></head><body style="font-family:Georgia,serif">' + paragraphs +
     '<p><a id="ref" href="notes.xhtml#f1" epub:type="noteref">Сноска</a> · <a id="seealso" href="notes.xhtml#more"><span id="link-label">См. также</span></a> · <a id="external" href="https://example.invalid/info">Внешняя ссылка</a></p></body></html>');
-  zip.file('notes.xhtml','<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Примечания</title></head><body><aside epub:type="footnote" id="f1"><p>Полярная звезда указывает на север. <a role="doc-backlink" href="chapter.xhtml#ref">Назад</a></p></aside><p id="more">Дополнительный материал</p></body></html>');
+  zip.file('notes.xhtml','<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Примечания</title></head><body><aside epub:type="footnote" id="f1"><p>Полярная <em>звезда</em> указывает на север. <a role="doc-backlink" href="chapter.xhtml#ref">Назад</a></p></aside><p id="more">Дополнительный материал</p><img id="map" alt="Карта мыса" width="20" height="10" src="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22200%22%20height=%22100%22%3E%3Crect%20width=%22200%22%20height=%22100%22%20fill=%22green%22/%3E%3C/svg%3E"/></body></html>');
   return zip.generateAsync({type: 'nodebuffer'});
 }
 
@@ -34,7 +34,7 @@ async function main() {
     ['/web-epub.js', ['text/javascript', fs.readFileSync(fromWeb.resolve('epubjs/dist/epub.min.js'))]],
     ['/publication.epub', ['application/epub+zip', book]],
   ]);
-  for (const name of ['index.html', 'reader.js', 'epub.min.js', 'jszip.min.js']) {
+  for (const name of ['index.html', 'reader.js', 'reader-tools.js', 'epub.min.js', 'jszip.min.js']) {
     files.set('/' + name, [name.endsWith('html') ? 'text/html' : 'text/javascript', fs.readFileSync(path.join(assets, name))]);
   }
   const server = http.createServer((req, res) => {
@@ -407,6 +407,36 @@ async function main() {
     const rtlBack = await mobile.evaluate(() => events.filter(e => e.type === 'place')[3].locator);
     assert(await mobile.evaluate(([a,b]) => new ePub.CFI().compare(a,b)>0,[rtlForward,rtlBack]));
     console.log('PASS selection keeps its text; RTL edge taps and swipe advance in reading order, beginning has no phantom writes');
+    const beforeInspection = await places();
+    const report = async (type,id) => {
+      await mobile.waitForFunction(([type,id]) => events.some(e => e.type === type && e.id === id),[type,id]);
+      return mobile.evaluate(([type,id]) => events.find(e => e.type === type && e.id === id),[type,id]);
+    };
+    await send({type:'previewPosition',percentage:.9,id:30});
+    const preview = await report('positionPreview',30);
+    assert.match(preview.locator,/^epubcfi\(/);
+    assert(preview.excerpt.length > 0);
+    await send({type:'search',query:'ПОЛЯРНАЯ  звезда',id:31});
+    const search = await report('searchResults',31);
+    assert.equal(search.items.length,1);
+    assert.match(search.items[0].excerpt,/Полярная звезда/);
+    await send({type:'search',query:'Тихий',id:32});
+    assert.equal((await report('searchResults',32)).limited,true);
+    await send({type:'style',settings:{...settings,chapterHint:'pages'}});
+    await mobile.waitForFunction(() => events.some(e => e.type === 'chapterRemainder' && e.pages > 0));
+    await send({type:'style',settings:{...settings,chapterHint:'minutes'}});
+    await mobile.waitForFunction(() => events.some(e => e.type === 'chapterRemainder' && e.minutes > 0));
+    assert.equal(await places(),beforeInspection);
+    await send({type:'jump',locator:search.items[0].locator}); await waitPlace(beforeInspection+1);
+    assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'place').at(-1).locator),search.items[0].locator);
+    await mobile.evaluate(() => document.querySelector('#page iframe').contentDocument.getElementById('map').click());
+    await mobile.waitForFunction(() => !document.querySelector('#illustration').hidden && document.querySelector('#illustration img').naturalWidth > 0);
+    await mobile.locator('[data-plus]').click();
+    assert.match(await mobile.locator('.image-surface img').evaluate(el => el.style.transform),/scale\(1.5\)/);
+    await send({type:'closeIllustration'});
+    await mobile.waitForFunction(() => document.querySelector('#illustration').hidden);
+    assert.equal(await places(),beforeInspection+1);
+    console.log('PASS cross-chapter, cross-inline EPUB search, limited results, noncommitting exact preview, chapter hints and image zoom preserve CFI');
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

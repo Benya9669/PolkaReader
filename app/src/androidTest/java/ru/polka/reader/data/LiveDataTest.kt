@@ -38,7 +38,7 @@ class LiveDataTest {
         assertEquals(pdfBook.id, data.bookForFile(one.scope, file.id).id)
         if (edition.hasCover) assertTrue(data.cover(one.scope, edition.id)!!.length() > 0)
         data.remove(one.scope, file.id)
-        val temporaryPath = data.withReadingFile(one.scope, file.id, pdfBook.id, { _, _ -> }) { copy, permanent ->
+        val temporaryPath = data.withReadingSource(one.scope, file.id, pdfBook.id, { _, _ -> }) { copy, _, permanent ->
             assertFalse(permanent)
             assertEquals(file.id, copy.fileId)
             assertTrue(File(copy.path).toPath().startsWith(context.cacheDir.toPath()))
@@ -48,7 +48,7 @@ class LiveDataTest {
             assertEquals(copy.fileId, data.recentBook(one.scope).first()?.fileId)
             copy.path
         }
-        data.withReadingFile(one.scope, file.id, pdfBook.id, { _, _ -> error("Повторное получение готовой книги") }) { copy, permanent ->
+        data.withReadingSource(one.scope, file.id, pdfBook.id, { _, _ -> error("Повторное получение готовой книги") }) { copy, _, permanent ->
             assertFalse(permanent)
             assertEquals(temporaryPath, copy.path)
         }
@@ -68,19 +68,37 @@ class LiveDataTest {
         val restored = SessionVault(context)
         assertEquals(one, restored.account())
         assertNotNull(restored.decrypt(one))
+        val epubBook = page.items.first { b -> b.editions.any { e -> e.files.any { it.format == "epub" } } }
+        val epub = epubBook.editions.flatMap { it.files }.first { it.format == "epub" }
+        data.withReadingSource(one.scope, epub.id, epubBook.id, { _, _ -> }) { copy, _, _ -> data.markOpened(copy) }
+        assertEquals(listOf(epubBook.id, pdfBook.id), data.recentBooks(one.scope).first().take(2).map { it.workId })
+        val locator = "epubcfi(/6/2!/4/2/2:0)"
+        val quote = "Офлайн " + UUID.randomUUID()
+        // Simulate a lost POST response; replay uses Polka's deduplication.
+        val accepted = data.addAnnotation(one.scope, epub.id, locator, quote, "Черновик")
         // Revoke remotely while the client still holds its session. Offline content must remain readable.
         data.request(one.scope, "POST", "/auth/logout")
         val revoked = runCatching { data.verify(one.scope) }.exceptionOrNull()
         assertEquals(401, (revoked as ApiError).status)
         assertEquals(false, data.active.value?.authenticated)
         assertEquals(local.path, data.downloads(one.scope).first().single { it.fileId == file.id }.path)
+        data.notes.add(one.scope, epub.id, locator, quote, "Черновик")
+        val pending = data.notes.observe(one.scope, epub.id).first().single { it.quote == quote }
+        assertTrue(pending.pending)
+        data.notes.change(pending, "Дополнено без сети")
+        assertTrue(data.notes.send(one.scope, epub.id))
+        assertTrue(data.notes.observe(one.scope, epub.id).first().single { it.key == pending.key }.pending)
         assertEquals(one.scope, data.login(server, "readerone", password).scope)
+        assertTrue(data.notes.send(one.scope, epub.id))
+        data.notes.refresh(one.scope, epub.id)
+        val uploaded = data.notes.observe(one.scope, epub.id).first().single { it.quote == quote }
+        assertFalse(uploaded.pending)
+        assertEquals(accepted.id, uploaded.serverId)
+        assertEquals("Дополнено без сети", data.annotations(one.scope, epub.id).single { it.quote == quote }.note)
 
         val marker = "Тест " + UUID.randomUUID().toString()
         val mark = data.addBookmark(one.scope, file.id, "17", marker)
         assertTrue(data.bookmarks(one.scope, file.id).any { it == mark })
-        val epub = page.items.flatMap { it.editions }.flatMap { it.files }.first { it.format == "epub" }
-        val locator = "epubcfi(/6/2!/4/2/2:0)"
         val note = data.addAnnotation(one.scope, epub.id, locator, "Абзац", marker)
         assertEquals("Изменено", data.updateAnnotation(one.scope, epub.id, note.id, "Изменено").note)
         try {
@@ -90,12 +108,17 @@ class LiveDataTest {
             assertNotEquals(one.scope, two.scope)
             assertTrue(data.downloads(two.scope).first().none { it.fileId == file.id })
             assertNull(data.lastOpened(two.scope).first())
+            assertTrue(data.recentBooks(two.scope).first().isEmpty())
+            assertTrue(data.notes.observe(two.scope, epub.id).first().none { it.quote == quote })
             assertTrue(data.bookmarks(two.scope, file.id).none { it.id == mark.id })
             assertTrue(data.annotations(two.scope, epub.id).none { it.id == note.id })
             val stale = runCatching { data.verify(one.scope) }.exceptionOrNull()
             assertEquals(401, (stale as ApiError).status)
         } finally {
             data.login(server, "readerone", password)
+            data.notes.change(uploaded, remove = true)
+            assertTrue(data.notes.send(one.scope, epub.id))
+            assertTrue(data.annotations(one.scope, epub.id).none { it.id == accepted.id })
             data.deleteAnnotation(one.scope, epub.id, note.id)
             data.deleteBookmark(one.scope, file.id, mark.id)
             data.remove(one.scope, file.id)
