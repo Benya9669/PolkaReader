@@ -53,22 +53,24 @@ sha256sum --check "$apk.sha256" &&
 $repo = 'Benya9669/PolkaReader'
 $keyDir = Join-Path $env:USERPROFILE 'PolkaSigning'
 New-Item -ItemType Directory -Force $keyDir | Out-Null
-$store = Join-Path $keyDir 'polka-reader.jks'
+$store = Join-Path $keyDir 'polka-reader-release.jks'
 if (Test-Path -LiteralPath $store) { throw 'Хранилище уже существует. Используйте имеющийся ключ.' }
-keytool -genkeypair -keystore $store -storetype JKS -alias polka-reader -keyalg RSA -keysize 3072 -validity 20000
+$tool = (Get-Command keytool -ErrorAction SilentlyContinue).Source
+if (-not $tool) { $tool = 'C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe' }
+& $tool -genkeypair -keystore $store -storetype JKS -alias polka-reader -keyalg RSA -keysize 3072 -validity 10000
 ```
 
 **Linux (Bash)**
 
 ```bash
 repo='Benya9669/PolkaReader'
-store="$HOME/.local/share/polka-signing/polka-reader.jks"
+store="$HOME/.local/share/polka-signing/polka-reader-release.jks"
 (
   set -eu
   umask 077
   mkdir -p "$(dirname "$store")"
   if [ -e "$store" ]; then echo 'Хранилище уже существует' >&2; exit 1; fi
-  keytool -genkeypair -keystore "$store" -storetype JKS -alias polka-reader -keyalg RSA -keysize 3072 -validity 20000
+  keytool -genkeypair -keystore "$store" -storetype JKS -alias polka-reader -keyalg RSA -keysize 3072 -validity 10000
 )
 ```
 
@@ -144,3 +146,17 @@ try {
 ```
 
 Для проверки обновления установите прежний подписанный APK на отдельный эмулятор или тестовый телефон. Подключите его к серверу, скачайте книгу и сохраните место чтения. Соберите версию с большим `versionCode` и тем же ключом. Установите её через `adb install -r` и откройте ту же книгу без сети. Должны сохраниться аккаунт, локальная копия, позиция и ожидающие записи. После подключения проверьте синхронизацию на сервере.
+
+Для принятой версии 0.1.0 этот сценарий воспроизведён на чистом эмуляторе Pixel 9a. В изолированной копии проекта собраны две версии — `0.1.0 (1000)` и `0.1.1 (1001)`. Проверка `apksigner` подтвердила одинаковый SHA-256 сертификата, `aapt2` — прежний идентификатор пакета. При обновлении в авиарежиме сохранились скачанный EPUB, вторая глава, шрифт 120 %, сепия и тёмная тема приложения. После подключения приложение отправило точный CFI сохранённым сеансом.
+
+Чтобы повторить этот тест из версии 0.1.0, подготовьте локальный стенд по README, запустите отдельный эмулятор без установленного Polka Reader и задайте `JAVA_HOME`, `ANDROID_HOME` и `POLKA_QA_PASSWORD` для тестового стенда. Укажите фактический номер эмулятора и новую папку для сборки. Первый скрипт самостоятельно создаёт временный ключ и удаляет его после сборки двух APK. Второй переключает авиарежим эмулятора и использует аккаунт `readertwo`.
+
+```powershell
+.\.verification\venv\Scripts\python.exe tools/qa/upgrade_build.py .verification/upgrade-test
+.\.verification\venv\Scripts\python.exe tools/qa/upgrade_flow.py .verification/upgrade-test/release-artifacts --serial emulator-5556
+```
+
+```bash
+.verification/venv/bin/python tools/qa/upgrade_build.py .verification/upgrade-test
+.verification/venv/bin/python tools/qa/upgrade_flow.py .verification/upgrade-test/release-artifacts --serial emulator-5556
+```
