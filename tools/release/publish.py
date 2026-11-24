@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def version_code(version: str) -> int:
@@ -69,15 +70,36 @@ class GitHub:
 
     def api(self, path: str, method: str = "GET", body: dict | None = None, paginate: bool = False):
         args = ["gh", "api", "-X", method, self.base + "/" + path]
+        if method == "GET":
+            args += ["-H", "Cache-Control: no-cache"]
         if paginate:
             args += ["--paginate", "--slurp"]
         if body is not None:
             args += ["--input", "-"]
-        result = subprocess.check_output(args, input=json.dumps(body).encode() if body is not None else None)
+        result = subprocess.run(args, input=json.dumps(body).encode() if body is not None else None,
+                                capture_output=True)
+        if result.returncode:
+            error = result.stderr.decode(errors="replace").strip()
+            status = re.search(r"HTTP (404|408|429|5[0-9]{2})\b", error)
+            if method == "GET" and status:
+                raise TransientReadError(error, int(status[1]))
+            raise ValueError(f"GitHub {method} {path}: {error}")
+        result = result.stdout
         return json.loads(result) if result.strip() else None
 
     def releases(self) -> list[dict]:
         return [r for page in self.api("releases?per_page=100", paginate=True) for r in page]
+
+    def release(self, release_id: int) -> dict:
+        return self.api(f"releases/{release_id}")
+
+    def release_by_tag(self, tag: str) -> dict | None:
+        try:
+            return self.api("releases/tags/" + tag)
+        except TransientReadError as error:
+            if error.status == 404:
+                return None
+            raise
 
     def tag_commit(self, tag: str) -> str | None:
         items = self.api("git/matching-refs/tags/" + tag)
@@ -101,6 +123,27 @@ class GitHub:
                             f"{self.base}/releases/assets/{asset['id']}"], stdout=stream, check=True)
         if "sha256:" + digest(path) != asset.get("digest"):
             raise ValueError("Контрольная сумма скачанного файла отличается от метаданных GitHub")
+
+
+class TransientReadError(OSError):
+    """An idempotent read can be temporarily unavailable after a successful write."""
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+def wait_for_read(read, description):
+    last_error = None
+    for wait in (0, 0.5, 1, 2, 4, 6, 8):
+        if wait:
+            time.sleep(wait)
+        try:
+            value = read()
+            if value is not None:
+                return value
+        except TransientReadError as error:
+            last_error = error
+    raise ValueError(f"GitHub не подтвердил {description}: {last_error or 'истекло время ожидания'}")
 
 
 def verified_asset(assets: list[dict], name: str) -> dict:
@@ -133,12 +176,21 @@ class Publisher:
         self.marker = "<!-- polka-reader-release " + commit + " -->"
 
     def inspect(self) -> tuple[bool, dict | None]:
-        matches = [r for r in self.api.releases() if r["tag_name"] == self.tag]
-        if len(matches) > 1:
+        # The release list also includes drafts whose public tag has not been created.
+        ids = {r["id"] for r in self.api.releases() if self.matches_tag(r)}
+        by_tag = self.api.release_by_tag(self.tag)
+        if by_tag:
+            ids.add(by_tag["id"])
+        if len(ids) > 1:
             raise ValueError("Обнаружены несколько релизов с одинаковым тегом")
-        release = matches[0] if matches else None
+        release = None
+        if ids:
+            release_id = ids.pop()
+            release = wait_for_read(lambda: self.api.release(release_id), f"метаданные релиза {release_id}")
         tagged = self.api.tag_commit(self.tag)
         if release and not release["draft"]:
+            if release["tag_name"] != self.tag:
+                raise ValueError("Опубликованный тег изменился во время проверки")
             complete(release, self.version)
             if not tagged:
                 raise ValueError("У опубликованного релиза отсутствует тег")
@@ -148,11 +200,21 @@ class Publisher:
             return False, release
         if tagged and tagged != self.commit:
             raise ValueError(f"Тег {self.tag} уже указывает на другой commit {tagged}")
-        if release and (release["target_commitish"] != self.commit or release["name"] != self.title
-                        or release["author"]["login"] != "github-actions[bot]"
-                        or self.marker not in (release["body"] or "").splitlines()):
-            raise ValueError("Черновик принадлежит другому запуску или commit")
+        if release:
+            self.check_owner(release)
         return True, release
+
+    def matches_tag(self, release: dict) -> bool:
+        return release["tag_name"] == self.tag or (
+            release["draft"] and release["name"] == self.title and
+            bool(re.fullmatch(r"untagged-[0-9a-f]+", release["tag_name"] or ""))
+        )
+
+    def check_owner(self, release: dict) -> None:
+        if (not self.matches_tag(release) or release["target_commitish"] != self.commit
+                or release["name"] != self.title or release["author"]["login"] != "github-actions[bot]"
+                or self.marker not in (release["body"] or "").splitlines()):
+            raise ValueError("Черновик принадлежит другому запуску или commit")
 
     def check_upgrade(self, signer: str, folder: Path) -> None:
         previous = []
@@ -188,11 +250,24 @@ class Publisher:
         path = "releases/" + str(draft["id"])
         name = apk_name(self.version)
 
-        def current() -> dict:
-            needed_now, release = self.inspect()
-            if not needed_now or not release or release["id"] != draft["id"]:
-                raise ValueError("Состояние черновика изменилось во время публикации")
-            return release
+        def current(ready=None, published=False) -> dict:
+            def read():
+                # A new draft can be absent from the releases list even after a successful POST.
+                release = self.api.release(draft["id"])
+                if release["id"] != draft["id"]:
+                    raise ValueError("GitHub вернул другой ID релиза")
+                self.check_owner(release)
+                if release["draft"] and published:
+                    return None
+                if not release["draft"] and not published:
+                    raise ValueError("Релиз уже опубликован, изменение файлов остановлено")
+                if ready is not None and not ready(release["assets"]):
+                    return None
+                return release
+            return wait_for_read(read, f"состояние релиза {draft['id']}")
+
+        def uploaded(assets, filename):
+            return any(a["name"] == filename and a["state"] == "uploaded" and a.get("digest") for a in assets)
 
         def writable_assets(filename: str) -> list[dict]:
             assets = current()["assets"]
@@ -201,7 +276,7 @@ class Publisher:
                 # Only this incomplete object in our verified draft can be removed.
                 if asset["name"] == filename and asset["state"] == "starter" and asset["size"] == 0:
                     self.api.api("releases/assets/" + str(asset["id"]), "DELETE")
-                    return current()["assets"]
+                    return current(lambda items: all(item["id"] != asset["id"] for item in items))["assets"]
             return assets
 
         # Build output can differ between runners. Reuse a previously uploaded signed APK
@@ -209,6 +284,7 @@ class Publisher:
         assets = writable_assets(name)
         if any(asset["name"] == name for asset in assets):
             existing = folder / name
+            assets = current(lambda items: uploaded(items, name))["assets"]
             self.api.download(verified_asset(assets, name), existing)
             if verify_apk(existing, self.version) != signer:
                 raise ValueError("Другая подпись APK в черновике")
@@ -216,22 +292,23 @@ class Publisher:
         else:
             self.api.upload(draft["id"], name, apk)
         hash_value = digest(apk)
-        assets = writable_assets(name + ".sha256")
+        assets = current(lambda items: uploaded(items, name))["assets"]
         if verified_asset(assets, name)["digest"] != "sha256:" + hash_value:
             raise ValueError("Загруженный APK отличается от проверенного")
+        assets = writable_assets(name + ".sha256")
         if not any(asset["name"] == name + ".sha256" for asset in assets):
             check = folder / (name + ".sha256")
             check.write_bytes(checksum(name, hash_value))
             self.api.upload(draft["id"], check.name, check)
-        complete(current(), self.version)
+        complete(current(lambda items: uploaded(items, name) and uploaded(items, name + ".sha256")), self.version)
         if self.api.tag_commit(self.tag) is None:
             # Create-only Git ref. A concurrent publisher cannot move an existing tag.
             self.api.api("git/refs", "POST", {"ref": "refs/tags/" + self.tag, "sha": self.commit})
-        if self.api.tag_commit(self.tag) != self.commit:
+        if wait_for_read(lambda: self.api.tag_commit(self.tag), "появление тега") != self.commit:
             raise ValueError("Тег не совпал с проверенным commit")
-        self.api.api(path, "PATCH", {"draft": False})
-        needed_after, _ = self.inspect()
-        if needed_after or self.api.tag_commit(self.tag) != self.commit:
+        self.api.api(path, "PATCH", {"draft": False, "tag_name": self.tag, "target_commitish": self.commit})
+        complete(current(published=True), self.version)
+        if self.api.tag_commit(self.tag) != self.commit:
             raise ValueError("GitHub не подтвердил публикацию")
 
 

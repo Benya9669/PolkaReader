@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from publish import Publisher, apk_name, candidate, complete, verify_apk, version_code
+from publish import Publisher, TransientReadError, apk_name, candidate, complete, verify_apk, version_code
 
 
 FIRST = "1" * 40
@@ -22,6 +22,12 @@ class LocalGitHub:
 
     def releases(self):
         return self.rows
+
+    def release(self, release_id):
+        return self.rows[release_id - 1]
+
+    def release_by_tag(self, tag):
+        return next((r for r in self.rows if not r["draft"] and r["tag_name"] == tag), None)
 
     def tag_commit(self, tag):
         return self.tags.get(tag)
@@ -104,6 +110,41 @@ class ReleaseTest(unittest.TestCase):
         Publisher(self.service, "0.1.1", NEXT).publish(self.file, self.folder)
         self.assertEqual(self.service.tags, {"v0.1.0": FIRST, "v0.1.1": NEXT})
         self.assertEqual(len(self.service.rows), 2)
+
+    def test_new_draft_and_uploads_can_lag_behind_the_write(self):
+        seen = set()
+        def delayed(release_id):
+            row = self.service.rows[release_id - 1]
+            state = (row["draft"], len(row["assets"]))
+            if state not in seen:
+                seen.add(state)
+                if not row["assets"]:
+                    raise TransientReadError("HTTP 404", 404)
+                if not row["draft"]:
+                    return {**row, "draft": True}
+                return {**row, "assets": row["assets"][:-1]}
+            return row
+
+        with patch.object(self.service, "releases", return_value=[]), patch.object(
+            self.service, "release", side_effect=delayed
+        ), patch("publish.time.sleep") as slept:
+            self.pub.publish(self.file, self.folder)
+        self.assertGreaterEqual(slept.call_count, 4)
+        self.assertFalse(self.service.rows[0]["draft"])
+        complete(self.service.rows[0], "0.1.0")
+
+    def test_reuse_own_untagged_draft_but_do_not_touch_foreign_draft(self):
+        self.service.fail_upload = apk_name("0.1.0")
+        with self.assertRaises(OSError):
+            self.pub.publish(self.file, self.folder)
+        row = self.service.rows[0]
+        row["tag_name"] = "untagged-123abc"
+        with self.assertRaisesRegex(ValueError, "Черновик"):
+            Publisher(self.service, "0.1.0", NEXT).publish(self.file, self.folder)
+        self.pub.publish(self.file, self.folder)
+        self.assertEqual(len(self.service.rows), 1)
+        self.assertFalse(row["draft"])
+        self.assertEqual(row["tag_name"], self.pub.tag)
 
     def test_upload_interruption_resumes_the_original_apk(self):
         self.service.fail_upload = apk_name("0.1.0") + ".sha256"
