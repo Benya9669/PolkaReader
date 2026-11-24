@@ -4,11 +4,17 @@ import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -52,6 +58,7 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
     var openAfterDownload by rememberSaveable { mutableStateOf<Long?>(null) }
     var menu by remember { mutableStateOf(false) }
     var config by rememberSaveable { mutableStateOf(false) }
+    var about by rememberSaveable { mutableStateOf(false) }
     var libraryList by remember { mutableStateOf(emptyList<Library>()) }
     var refresh by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -81,13 +88,20 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
         val singleDetail = !wide && detail != null
         BackHandler(detail != null || tab != 0) { if (detail != null) detail = null else tab = 0 }
         Row {
-            if (wide) NavigationRail {
+            if (wide) NavigationRail(header = {
+                Column(Modifier.widthIn(max = 112.dp).padding(horizontal = 8.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    BrandMark(Modifier.size(38.dp))
+                    Spacer(Modifier.height(6.dp))
+                    Text("Polka Reader", style = MaterialTheme.typography.labelMedium)
+                }
+            }) {
                 labels.forEachIndexed { i, label -> NavigationRailItem(selected = i == tab, onClick = { choose(i) },
                     icon = { Icon(icons[i], null) }, label = { Text(label) }) }
             }
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (singleDetail) IconButton({ detail = null }) { Icon(Icons.Outlined.ArrowBack, "Назад") }
+                    if (singleDetail) IconButton({ detail = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Назад") }
                     Text(if (singleDetail) "Карточка книги" else labels[tab], Modifier.weight(1f),
                         style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Serif)
                     Box {
@@ -95,6 +109,7 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem(text = { Text(account.username) }, onClick = { config = true; menu = false })
                             DropdownMenuItem(text = { Text("Настройки") }, onClick = { config = true; menu = false })
+                            DropdownMenuItem(text = { Text("О приложении") }, onClick = { about = true; menu = false })
                             DropdownMenuItem(text = { Text("Сменить аккаунт или сервер") }, onClick = { menu = false; signIn() })
                             DropdownMenuItem(text = { Text("Выйти") }, onClick = { menu = false; coroutine.launch {
                                 try { data.logout(scope) } catch (e: Exception) { error = friendly(e) }
@@ -157,6 +172,13 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
                 TextButton(onClick = { setTheme(it) }) { Text((if (theme == it) "✓  " else "") + it) }
             }
         } }, confirmButton = { TextButton({ config = false }) { Text("Готово") } })
+    if (about) AlertDialog(onDismissRequest = { about = false }, title = { Text("О приложении") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            BrandMark(Modifier.size(56.dp))
+            Text("Polka Reader", style = MaterialTheme.typography.headlineSmall)
+            Text("Версия ${BuildConfig.VERSION_NAME}")
+            Text("Чтение книг с вашего сервера «Полка».")
+        } }, confirmButton = { TextButton({ about = false }) { Text("Закрыть") } })
 }
 
 @Composable internal fun Waiting() { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -203,35 +225,72 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
         catch (e: Exception) { error = friendly(e) }
     }
     val opened = downloads.filter { it.lastOpenedAt != null }.maxByOrNull { it.lastOpenedAt ?: 0 }
-    val local = rows.firstOrNull { it.fileId == opened?.fileId }
+    val local = opened?.let { book -> rows.firstOrNull { it.fileId == book.fileId } }
     val latest = remote.maxByOrNull { timestamp(it.updated) }
     val localWins = opened != null && (latest == null || local?.dirty == true ||
         maxOf(opened.lastOpenedAt ?: 0, local?.lastReadAt ?: 0) >= timestamp(latest.updated))
     val id = if (localWins) opened?.fileId else latest?.fileId
     val copy = downloads.firstOrNull { it.fileId == id }
     val title = copy?.title ?: latest?.book?.title
-    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Продолжить чтение", style = MaterialTheme.typography.headlineMedium, fontFamily = FontFamily.Serif)
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Продолжить чтение", style = MaterialTheme.typography.headlineMedium)
         if (id != null && title != null) {
             val pct = if (localWins) local?.point?.percentage ?: 0.0 else latest!!.percentage
             val label = if (localWins) local?.point?.let(::placeLabel) ?: "Начало книги"
                 else listOfNotNull(latest?.chapter, percent(pct)).joinToString(" · ")
-            ElevatedCard(onClick = { if (copy != null) read(id) else latest?.let { fetch(it.book, id) } }) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Cover(data, account.scope, copy?.editionId ?: latest?.book?.editions?.firstOrNull { ed -> ed.files.any { it.id == id } && ed.hasCover }?.id,
-                        title, Modifier.size(76.dp, 110.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(title, style = MaterialTheme.typography.titleLarge, fontFamily = FontFamily.Serif)
-                        Text(copy?.authors ?: latest?.book?.authors.orEmpty())
-                        Text(label, style = MaterialTheme.typography.labelLarge)
-                        LinearProgressIndicator(progress = { pct.toFloat() }, modifier = Modifier.fillMaxWidth())
-                        Text(if (copy != null) "Читать офлайн" else "Скачать и читать", color = MaterialTheme.colorScheme.primary)
+            val open = { if (copy != null) read(id) else latest?.let { fetch(it.book, id) }; Unit }
+            val heroPaper = Color(0xfffff4d8)
+            val heroInk = Color(0xff294738)
+            Surface(Modifier.widthIn(max = 940.dp).fillMaxWidth(), shape = RoundedCornerShape(18.dp),
+                color = heroInk, contentColor = heroPaper) {
+                BoxWithConstraints(Modifier.padding(20.dp)) {
+                    val large = maxWidth >= 580.dp
+                    val stack = LocalDensity.current.fontScale > 1.5f && !large
+                    val jacket: @Composable () -> Unit = {
+                        Cover(data, account.scope, copy?.editionId ?: latest?.book?.editions?.firstOrNull { ed -> ed.files.any { it.id == id } && ed.hasCover }?.id,
+                            title, if (large) Modifier.size(156.dp, 224.dp) else Modifier.size(88.dp, 128.dp))
+                    }
+                    val details: @Composable () -> Unit = {
+                        Column(verticalArrangement = Arrangement.spacedBy(if (large) 12.dp else 6.dp)) {
+                            Text(if (copy != null) "${copy.format.uppercase()} · На устройстве" else "В библиотеке",
+                                style = MaterialTheme.typography.labelMedium, color = heroPaper)
+                            Text(title, style = if (large) MaterialTheme.typography.displaySmall else MaterialTheme.typography.headlineSmall)
+                            Text(copy?.authors ?: latest?.book?.authors.orEmpty())
+                            Text(label, style = MaterialTheme.typography.labelLarge)
+                            LinearProgressIndicator(progress = { pct.toFloat() }, modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xffefb667), trackColor = Color(0xff657c68))
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        if (stack) { jacket(); details() }
+                        else Row(horizontalArrangement = Arrangement.spacedBy(if (large) 28.dp else 14.dp),
+                            verticalAlignment = Alignment.CenterVertically) { jacket(); Box(Modifier.weight(1f)) { details() } }
+                        Button(open, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(
+                            containerColor = heroPaper, contentColor = heroInk)) {
+                            Icon(Icons.Outlined.MenuBook, null); Spacer(Modifier.width(10.dp))
+                            Text(if (copy != null) "Продолжить чтение" else "Скачать и читать")
+                        }
                     }
                 }
             }
         } else {
             Text("Здесь появится книга, которую вы читали последней.")
             Button(catalog) { Text("Открыть библиотеку") }
+        }
+        val others = downloads.filter { it.fileId != id }.take(4)
+        if (others.isNotEmpty()) {
+            Text("На устройстве", style = MaterialTheme.typography.titleLarge)
+            others.forEach { other ->
+                Row(Modifier.widthIn(max = 940.dp).fillMaxWidth().clickable { read(other.fileId) }.padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Cover(data, account.scope, other.editionId, other.title, Modifier.size(38.dp, 54.dp))
+                    Column(Modifier.weight(1f)) { Text(other.title, style = MaterialTheme.typography.titleMedium)
+                        Text(listOf(other.authors, other.format.uppercase()).filter(String::isNotBlank).joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Icon(Icons.Outlined.ChevronRight, null)
+                }
+            }
         }
         error?.let { Notice(it) { retry++ } }
     }

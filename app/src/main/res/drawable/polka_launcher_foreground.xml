@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- The shelf corners remain inside the adaptive icon's central 66dp safe circle. -->
+    <group android:translateX="20.4" android:translateY="20.4" android:scaleX="1.4" android:scaleY="1.4">
+        <path android:pathData="@string/polka_upright_books" android:fillColor="@color/polka_paper" />
+        <path android:pathData="@string/polka_shelf" android:fillColor="@color/polka_paper" />
+        <path android:pathData="@string/polka_tilted_book" android:fillColor="@color/polka_amber" />
+    </group>
+</vector>

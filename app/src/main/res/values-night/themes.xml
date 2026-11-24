@@ -1,0 +1,7 @@
+<resources>
+    <color name="polka_window">#19221D</color>
+    <style name="Theme.PolkaReader" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/polka_window</item>
+        <item name="android:colorAccent">@color/polka_sage</item>
+    </style>
+</resources>

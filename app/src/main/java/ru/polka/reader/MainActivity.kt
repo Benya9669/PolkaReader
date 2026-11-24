@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +28,7 @@ import ru.polka.reader.sync.ProgressSync
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val data = PolkaData.get(applicationContext)
@@ -81,9 +83,12 @@ private fun LoginScreen(account: Account?, data: PolkaData, done: () -> Unit, ba
     Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = 460.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Polka Reader", fontFamily = FontFamily.Serif, style = MaterialTheme.typography.displaySmall)
-            Text(if (account?.authenticated == false) "Войдите повторно, чтобы синхронизировать чтение." else "Вход в вашу библиотеку")
-            OutlinedTextField(url, { url = it }, label = { Text("Адрес сервера") },
+            BrandMark(Modifier.size(72.dp))
+            Text("Polka Reader", style = MaterialTheme.typography.displaySmall)
+            Text(if (account?.authenticated == false) "Войдите повторно, чтобы синхронизировать чтение." else "Подключение к вашей библиотеке",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(url, { url = it }, label = { Text("Адрес сервера „Полка“") },
                 placeholder = { Text("https://polka.example.org") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
             OutlinedTextField(name, { name = it }, label = { Text("Имя пользователя") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -101,8 +106,8 @@ private fun LoginScreen(account: Account?, data: PolkaData, done: () -> Unit, ba
                     catch (e: Exception) { error = friendly(e) }
                     finally { busy = false }
                 }
-            }, enabled = !busy && url.isNotBlank() && name.isNotBlank() && password.isNotEmpty()) {
-                Text(if (busy) "Подключение…" else "Войти")
+            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = !busy && url.isNotBlank() && name.isNotBlank() && password.isNotEmpty()) {
+                Text(if (busy) "Подключение…" else "Подключиться")
             }
             if (back != null) TextButton(onClick = back) { Text("Вернуться в приложение") }
         }

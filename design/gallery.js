@@ -96,17 +96,28 @@ function home(s){const b=books[0];return '<div class="appbar">'+brand+'<span cla
   '<div class="meter" style="--progress:38%"><i></i></div></div></div>'+button('resume',icon('book')+'Продолжить','primary')+'</article>'+
   '<div class="section-title"><strong>На устройстве</strong>'+button('nav:offline','Все '+downloaded.size)+'</div>'+
   '<div class="downloaded-rows">'+[...downloaded].filter(x=>x!==0).slice(0,2).map(i=>listRow(i,false,true)).join('')+'</div></div>'+nav('home')}
-function read(s){const pct=38+s.page,idx=s.page%prose.length,b=books[s.book];return (s.controls?
-  '<div class="readbar">'+ib('back','left','Назад')+'<b>'+b.title+'</b>'+ib('font','font','Размер текста')+ib('mark',s.mark?'check':'bookmark','Закладка')+'</div>':'')+
+const passages = [
+  ['У причала',prose[0]], ['У старой оранжереи',['Утром сад пах влажной землёй. Анна оставила сумку у скамьи и остановилась перед стеклянной дверью.','На верхней полке, в горшке с облупившейся этикеткой, распустился первый за эту весну цветок.']],
+  ['Слоистые облака',['Утренние наблюдения над Невой. Ветер северный, слабый. Нижняя граница облаков почти совпадает с линией дальнего берега.','К полудню в облачном покрове появились просветы. Светлые участки сместились к устью реки.']],
+  ['Высота',['Телескоп поворачивался медленно. За стеклом чётко проступал бледный диск планеты.','Над хребтом уже брезжил рассвет. Дежурный астроном записал координаты и закрыл купол.']],
+  ['Письмо первое',['В гавань мы вошли к вечеру. На причале нас встретила девочка в жёлтом плаще с огромной связкой ключей.','Я пишу тебе из маленькой комнаты под крышей. Вода так близко, что с подоконника видны огни лодок.']],
+  ['Речная терраса',['Тропинка вывела экспедицию на высокий берег. Песчаный обрыв держался на переплетении старых сосновых корней.','Ниже по течению склон становился положе, и у самой воды начинались луга.']],
+];
+function read(s){const b=books[s.book],pdf=b.format==='PDF',pct=Math.min(100,b.book+s.page);
+  const [heading,first]=passages[s.book],paragraphs=s.book===0?prose[s.page%prose.length]:first;
+  const marker=pdf?'Страница '+(17+s.page):'Глава '+(s.book===0?4:1);
+  return (s.controls?
+  '<div class="readbar">'+ib('back','left','Назад')+'<b>'+b.title+'</b>'+ib('font','font',pdf?'Масштаб страницы':'Размер текста')+ib('mark',s.mark?'check':'bookmark','Закладка')+'</div>':'')+
   '<article class="reading-page" data-action="panels" tabindex="0" aria-label="Показать или скрыть панели" style="--fontsize:'+(s.large?20:17)+'px">'+
-  '<div class="chapter-label">Глава четвёртая</div><h3>У причала</h3>'+prose[idx].map(p=>'<p>'+p+'</p>').join('')+'</article>'+
-  (s.controls?'<div class="reader-foot"><div class="foot-nav">'+ib('prev','left','Предыдущая страница')+'<span>Глава 4 · '+pct+'%</span>'+ib('next','right','Следующая страница')+
+  '<div class="chapter-label">'+(s.book===0?'Глава четвёртая':marker)+'</div><h3>'+heading+'</h3>'+paragraphs.map(p=>'<p>'+p+'</p>').join('')+'</article>'+
+  (s.controls?'<div class="reader-foot"><div class="foot-nav">'+ib('prev','left','Предыдущая страница')+'<span>'+marker+' · '+pct+'%</span>'+ib('next','right','Следующая страница')+
   '</div><div class="meter" style="--progress:'+pct+'%"><i></i></div><div class="sync">'+icon('saved')+(s.mark?'Закладка сохранена':'Позиция синхронизирована')+'</div></div>':'')}
 function matches(s){return books.map((_,i)=>i).filter(i=>(!s.filter||books[i].format==='EPUB')&&
   (s.screen!=='offline'||downloaded.has(i))&& (books[i].title+' '+books[i].author).toLocaleLowerCase('ru').includes(s.query.toLocaleLowerCase('ru')))}
 function results(s){const found=matches(s);return found.length?found.map(i=>listRow(i,s.book===i)).join(''):'<p class="empty">Книг не найдено</p>'}
-function catalog(s,phone=false){return '<section class="'+(phone?'phone-catalog scrollbox':'catalog')+'"><div class="catalog-head"><h3>'+
-  (s.screen==='offline'?'На устройстве':'Библиотека')+'</h3><span class="count">'+(s.screen==='offline'?downloaded.size:books.length)+' книг</span></div>'+
+function catalog(s,phone=false){const count=s.screen==='offline'?downloaded.size:books.length;
+  return '<section class="'+(phone?'phone-catalog scrollbox':'catalog')+'"><div class="catalog-head"><h3>'+
+  (s.screen==='offline'?'На устройстве':'Библиотека')+'</h3><span class="count">'+count+' '+(count===1?'книга':count>=2&&count<=4?'книги':'книг')+'</span></div>'+
   '<label class="field">'+icon('search')+'<input aria-label="Поиск по названию или автору" placeholder="Название или автор"></label>'+
   button('filter',icon('library')+(s.filter?'Только EPUB':'Все форматы')+icon('down'),'library-filter')+'<div class="results">'+results(s)+'</div></section>'}
 function detail(s,phone=false){const i=s.book,b=books[i],local=downloaded.has(i),p=b.book;

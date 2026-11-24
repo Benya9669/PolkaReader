@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.PolkaReader" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/polka_window</item>
+        <item name="android:colorAccent">@color/polka_green</item>
+    </style>
+    <style name="Theme.PolkaReader.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/polka_window</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/polka_splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.PolkaReader</item>
+    </style>
+</resources>

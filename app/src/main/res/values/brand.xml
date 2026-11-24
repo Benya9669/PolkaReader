@@ -1,0 +1,12 @@
+<resources>
+    <!-- Polka v0.3.1, frontend/public/assets/polka-mark.svg, original 48 × 48 viewport. -->
+    <color name="polka_green">#294738</color>
+    <color name="polka_sage">#9EB19A</color>
+    <color name="polka_paper">#FFF4D8</color>
+    <color name="polka_amber">#EFB667</color>
+    <color name="polka_window">#F7F4E9</color>
+    <string name="polka_tile_path" translatable="false">M11,1h26a10,10 0,0 1,10 10v26a10,10 0,0 1,-10 10H11A10,10 0,0 1,1 37V11A10,10 0,0 1,11 1Z</string>
+    <string name="polka_upright_books" translatable="false">M10.5,13h4a1.5,1.5 0,0 1,1.5 1.5v17a1.5,1.5 0,0 1,-1.5 1.5h-4A1.5,1.5 0,0 1,9 31.5v-17A1.5,1.5 0,0 1,10.5 13Z M20.5,9h4a1.5,1.5 0,0 1,1.5 1.5V15h-7v-4.5A1.5,1.5 0,0 1,20.5 9Z M19,17h7v14.5a1.5,1.5 0,0 1,-1.5 1.5h-4a1.5,1.5 0,0 1,-1.5 -1.5Z</string>
+    <string name="polka_tilted_book" translatable="false">m28,15 6,-2 6,18 -6,2z</string>
+    <string name="polka_shelf" translatable="false">M8,36h32v4H8z</string>
+</resources>

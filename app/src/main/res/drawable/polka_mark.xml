@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:pathData="@string/polka_tile_path" android:fillColor="@color/polka_green"
+        android:strokeColor="@color/polka_sage" android:strokeWidth="2" />
+    <path android:pathData="@string/polka_upright_books" android:fillColor="@color/polka_paper" />
+    <path android:pathData="@string/polka_shelf" android:fillColor="@color/polka_paper" />
+    <path android:pathData="@string/polka_tilted_book" android:fillColor="@color/polka_amber" />
+</vector>
