@@ -1,0 +1,11 @@
+/.verification/
+/.gradle/
+/.kotlin/
+**/build/
+/local.properties
+/.idea/
+*.iml
+*.jks
+*.keystore
+.env
+__pycache__/
