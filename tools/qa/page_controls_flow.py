@@ -92,7 +92,9 @@ def main() -> None:
             exact("Перелистывание")
             exact("Левый")
             move_slider("Ширина зоны касания", .97)
-            volume = exact("Листать кнопками громкости", False)
+            # Compose exposes the label inside the switch's checkable/toggleable parent.
+            volume = next(n for n in d.nodes() if n.get("checkable") == "true" and any(
+                child.get("content-desc") == "Листать кнопками громкости" for child in n.iter()))
             if volume.get("checked") != "true":
                 d.tap(volume)
             exact("Готово")
