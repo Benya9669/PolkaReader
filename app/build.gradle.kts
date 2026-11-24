@@ -4,6 +4,19 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseVersion = providers.fileContents(rootProject.layout.projectDirectory.file("VERSION"))
+    .asText.get().trimEnd('\r', '\n')
+val versionParts = Regex("""(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})""")
+    .matchEntire(releaseVersion)?.groupValues?.drop(1)?.map(String::toInt)
+    ?: throw GradleException("VERSION должен содержать X.Y.Z без ведущих нулей (X до 2099, Y и Z до 999).")
+val (major, minor, patch) = versionParts
+require(major <= 2099 && versionParts.any { it != 0 }) { "Недопустимая версия в VERSION." }
+val releaseCode = major * 1_000_000 + minor * 1_000 + patch
+val keystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+val keystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
+val signingAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+val signingPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
+
 android {
     namespace = "ru.polka.reader"
     compileSdk = 36
@@ -11,11 +24,22 @@ android {
         applicationId = "ru.polka.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseCode
+        versionName = releaseVersion
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    buildFeatures { compose = true }
+    signingConfigs {
+        create("publication") {
+            storeFile = keystorePath?.let { file(it) }
+            storePassword = keystorePassword
+            keyAlias = signingAlias
+            keyPassword = signingPassword
+        }
+    }
+    buildTypes {
+        release { signingConfig = signingConfigs.getByName("publication") }
+    }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -27,6 +51,7 @@ dependencies {
     implementation(compose)
     androidTestImplementation(compose)
     implementation("androidx.activity:activity-compose:1.12.4")
+    implementation("androidx.core:core-splashscreen:1.2.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
