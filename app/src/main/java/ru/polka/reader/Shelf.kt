@@ -259,7 +259,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
                             Text(copy?.authors ?: latest?.book?.authors.orEmpty())
                             Text(label, style = MaterialTheme.typography.labelLarge)
                             LinearProgressIndicator(progress = { pct.toFloat() }, modifier = Modifier.fillMaxWidth(),
-                                color = Color(0xffefb667), trackColor = Color(0xff657c68))
+                                color = Color(0xffefb667), trackColor = Color(0xff4e6053))
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
