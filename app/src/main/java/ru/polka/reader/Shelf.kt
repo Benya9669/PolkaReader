@@ -1,0 +1,267 @@
+package ru.polka.reader
+
+import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.*
+import ru.polka.reader.data.*
+import ru.polka.reader.sync.*
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import kotlin.math.roundToInt
+
+internal fun percent(value: Double) = "${(value.coerceIn(0.0, 1.0) * 100).roundToInt()} %"
+internal fun placeLabel(point: ReadingPoint): String =
+    listOfNotNull(point.chapter ?: point.locator.toLongOrNull()?.let { "Страница $it" }, percent(point.percentage)).joinToString(" · ")
+
+private fun timestamp(iso: String?): Long {
+    if (iso == null) return 0
+    return runCatching { Instant.parse(iso).toEpochMilli() }
+        .getOrElse { runCatching { LocalDateTime.parse(iso).toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrDefault(0) }
+}
+
+@Composable
+internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transfers: Transfers,
+                   appearance: Appearance, theme: String, setTheme: (String) -> Unit, signIn: () -> Unit) {
+    val scope = account.scope
+    val coroutine = rememberCoroutineScope()
+    val downloads by remember(scope) { data.downloads(scope) }.collectAsState(initial = emptyList())
+    val positions by remember(scope) { sync.observeRecent(scope) }.collectAsState(initial = emptyList())
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var detail by rememberSaveable { mutableStateOf<Long?>(null) }
+    var reading by rememberSaveable { mutableStateOf<Long?>(null) }
+    var openAfterDownload by rememberSaveable { mutableStateOf<Long?>(null) }
+    var menu by remember { mutableStateOf(false) }
+    var config by rememberSaveable { mutableStateOf(false) }
+    var libraryList by remember { mutableStateOf(emptyList<Library>()) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val progress by transfers.progress.collectAsState()
+    LaunchedEffect(scope, refresh, account.authenticated) {
+        try { libraryList = data.libraries(scope) }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { if (tab == 1) error = friendly(e) }
+    }
+    LaunchedEffect(downloads, openAfterDownload) {
+        openAfterDownload?.let { target ->
+            if (downloads.any { it.fileId == target }) { reading = target; openAfterDownload = null }
+        }
+    }
+    val current = reading
+    if (current != null) {
+        val copy = downloads.firstOrNull { it.fileId == current }
+        if (copy != null) ReaderRoute(account, data, sync, copy, appearance) { reading = null; refresh++ }
+        else { BackHandler { reading = null }; Waiting() }
+        return
+    }
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+        val wide = maxWidth >= 720.dp
+        val labels = listOf("Главная", "Библиотека", "На устройстве")
+        val icons = listOf(Icons.Outlined.Home, Icons.Outlined.LocalLibrary, Icons.Outlined.FileDownload)
+        val choose: (Int) -> Unit = { tab = it; detail = null; error = null }
+        val singleDetail = !wide && detail != null
+        BackHandler(detail != null || tab != 0) { if (detail != null) detail = null else tab = 0 }
+        Row {
+            if (wide) NavigationRail {
+                labels.forEachIndexed { i, label -> NavigationRailItem(selected = i == tab, onClick = { choose(i) },
+                    icon = { Icon(icons[i], null) }, label = { Text(label) }) }
+            }
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (singleDetail) IconButton({ detail = null }) { Icon(Icons.Outlined.ArrowBack, "Назад") }
+                    Text(if (singleDetail) "Карточка книги" else labels[tab], Modifier.weight(1f),
+                        style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Serif)
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.AccountCircle, "Учётная запись и оформление") }
+                        DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(text = { Text(account.username) }, onClick = { config = true; menu = false })
+                            DropdownMenuItem(text = { Text("Настройки") }, onClick = { config = true; menu = false })
+                            DropdownMenuItem(text = { Text("Сменить аккаунт или сервер") }, onClick = { menu = false; signIn() })
+                            DropdownMenuItem(text = { Text("Выйти") }, onClick = { menu = false; coroutine.launch {
+                                try { data.logout(scope) } catch (e: Exception) { error = friendly(e) }
+                            } })
+                        }
+                    }
+                }
+                if (!account.authenticated) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Сеанс истёк. Скачанные книги доступны.", Modifier.weight(1f))
+                    TextButton(signIn) { Text("Войти") }
+                }
+                error?.let { Notice(it) { error = null; refresh++ } }
+                Row(Modifier.weight(1f)) {
+                    if (!singleDetail) Box(Modifier.weight(1f)) {
+                        when (tab) {
+                            0 -> Home(data, account, downloads, positions, refresh, { choose(1) }, { reading = it }, { book, fileId ->
+                                val edition = book.editions.firstOrNull { ed -> ed.files.any { it.id == fileId } }
+                                val file = edition?.files?.firstOrNull { it.id == fileId }
+                                if (edition != null && file != null && file.readable) {
+                                    transfers.start(data, scope, book, edition, file)
+                                    openAfterDownload = fileId
+                                }
+                                tab = 1; detail = book.id
+                            })
+                            1 -> Catalog(data, scope, libraryList, refresh, { detail = it })
+                            2 -> DeviceDownloads(downloads, positions, { reading = it }, { id ->
+                                coroutine.launch {
+                                    try { data.remove(scope, id) } catch (e: Exception) { error = friendly(e) }
+                                }
+                            }, { choose(1) })
+                        }
+                    }
+                    val selected = detail
+                    if (selected != null && (singleDetail || wide)) {
+                        if (!singleDetail) VerticalDivider()
+                        Box(Modifier.weight(if (wide) 1.15f else 1f)) {
+                            key(selected) {
+                                BookDetail(data, scope, selected, libraryList, downloads, positions, progress, refresh,
+                                    { b, ed, f -> transfers.start(data, scope, b, ed, f) },
+                                    { id -> if (openAfterDownload == id) openAfterDownload = null; transfers.cancel(id) },
+                                    { reading = it }, { b, ed, f ->
+                                        transfers.start(data, scope, b, ed, f); openAfterDownload = f.id
+                                    })
+                            }
+                        }
+                    }
+                }
+                if (!wide && !singleDetail) NavigationBar {
+                    labels.forEachIndexed { i, label -> NavigationBarItem(selected = tab == i,
+                        onClick = { choose(i) }, icon = { Icon(icons[i], null) }, label = { Text(label) }) }
+                }
+            }
+        }
+    }
+    if (config) AlertDialog(onDismissRequest = { config = false }, title = { Text("Настройки") },
+        text = { Column {
+            Text(account.username); Text(account.server, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp)); Text("Тема приложения")
+            listOf("Системная", "Светлая", "Тёмная").forEach {
+                TextButton(onClick = { setTheme(it) }) { Text((if (theme == it) "✓  " else "") + it) }
+            }
+        } }, confirmButton = { TextButton({ config = false }) { Text("Готово") } })
+}
+
+@Composable internal fun Waiting() { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+@Composable internal fun Notice(message: String, retry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+        Text(message, color = MaterialTheme.colorScheme.error)
+        TextButton(retry) { Text("Повторить") }
+    }
+}
+
+@Composable internal fun Cover(data: PolkaData, scope: String, editionId: Long?, title: String, modifier: Modifier) {
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, scope, editionId) {
+        value = null
+        if (editionId != null) try {
+            val cover = data.cover(scope, editionId)
+            value = withContext(Dispatchers.IO) {
+                cover?.let {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(it.path, options)
+                    options.inSampleSize = Integer.highestOneBit((maxOf(options.outWidth, options.outHeight) / 350).coerceAtLeast(1))
+                    options.inJustDecodeBounds = false
+                    BitmapFactory.decodeFile(it.path, options)?.asImageBitmap()
+                }
+            }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { value = null }
+    }
+    Box(modifier.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center) {
+        bitmap?.let { Image(it, "Обложка книги «$title»", Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            ?: Text(title.trim().take(1), fontFamily = FontFamily.Serif, style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer)
+    }
+}
+
+@Composable
+private fun Home(data: PolkaData, account: Account, downloads: List<Download>, rows: List<ProgressRow>, refresh: Int,
+                 catalog: () -> Unit, read: (Long) -> Unit, fetch: (Book, Long) -> Unit) {
+    var remote by remember { mutableStateOf(emptyList<ReadingBook>()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableIntStateOf(0) }
+    LaunchedEffect(account.scope, refresh, retry) {
+        error = null
+        try { remote = data.home(account.scope) } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = friendly(e) }
+    }
+    val opened = downloads.filter { it.lastOpenedAt != null }.maxByOrNull { it.lastOpenedAt ?: 0 }
+    val local = rows.firstOrNull { it.fileId == opened?.fileId }
+    val latest = remote.maxByOrNull { timestamp(it.updated) }
+    val localWins = opened != null && (latest == null || local?.dirty == true ||
+        maxOf(opened.lastOpenedAt ?: 0, local?.lastReadAt ?: 0) >= timestamp(latest.updated))
+    val id = if (localWins) opened?.fileId else latest?.fileId
+    val copy = downloads.firstOrNull { it.fileId == id }
+    val title = copy?.title ?: latest?.book?.title
+    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Продолжить чтение", style = MaterialTheme.typography.headlineMedium, fontFamily = FontFamily.Serif)
+        if (id != null && title != null) {
+            val pct = if (localWins) local?.point?.percentage ?: 0.0 else latest!!.percentage
+            val label = if (localWins) local?.point?.let(::placeLabel) ?: "Начало книги"
+                else listOfNotNull(latest?.chapter, percent(pct)).joinToString(" · ")
+            ElevatedCard(onClick = { if (copy != null) read(id) else latest?.let { fetch(it.book, id) } }) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Cover(data, account.scope, copy?.editionId ?: latest?.book?.editions?.firstOrNull { ed -> ed.files.any { it.id == id } && ed.hasCover }?.id,
+                        title, Modifier.size(76.dp, 110.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(title, style = MaterialTheme.typography.titleLarge, fontFamily = FontFamily.Serif)
+                        Text(copy?.authors ?: latest?.book?.authors.orEmpty())
+                        Text(label, style = MaterialTheme.typography.labelLarge)
+                        LinearProgressIndicator(progress = { pct.toFloat() }, modifier = Modifier.fillMaxWidth())
+                        Text(if (copy != null) "Читать офлайн" else "Скачать и читать", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        } else {
+            Text("Здесь появится книга, которую вы читали последней.")
+            Button(catalog) { Text("Открыть библиотеку") }
+        }
+        error?.let { Notice(it) { retry++ } }
+    }
+}
+
+@Composable
+private fun DeviceDownloads(downloads: List<Download>, positions: List<ProgressRow>, read: (Long) -> Unit,
+                            remove: (Long) -> Unit, catalog: () -> Unit) {
+    var removing by remember { mutableStateOf<Download?>(null) }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (downloads.isEmpty()) item { Text("Скачанных книг пока нет."); TextButton(catalog) { Text("Открыть библиотеку") } }
+        items(downloads, key = { it.fileId }) { copy ->
+            OutlinedCard(onClick = { read(copy.fileId) }) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(copy.title, style = MaterialTheme.typography.titleMedium)
+                        Text(copy.authors)
+                        Text("${copy.format.uppercase()} · №${copy.fileId} · ${sizeLabel(copy.bytes)}", style = MaterialTheme.typography.bodySmall)
+                        positions.find { it.fileId == copy.fileId }?.let { Text(placeLabel(it.point)) }
+                    }
+                    IconButton(onClick = { removing = copy }) { Icon(Icons.Outlined.Delete, "Удалить локальную копию") }
+                }
+            }
+        }
+    }
+    removing?.let { copy -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("Удалить с устройства?") },
+        text = { Text("«${copy.title}» останется в библиотеке сервера. Место чтения сохранится.") },
+        confirmButton = { TextButton({ remove(copy.fileId); removing = null }) { Text("Удалить") } },
+        dismissButton = { TextButton({ removing = null }) { Text("Отмена") } }) }
+}
+
+internal fun sizeLabel(bytes: Long): String = if (bytes < 1_048_576) "${(bytes + 1023) / 1024} КБ"
+    else String.format(java.util.Locale.forLanguageTag("ru"), "%.1f МБ", bytes / 1_048_576.0)
