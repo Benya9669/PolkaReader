@@ -16,15 +16,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
+import ru.polka.reader.data.ReaderSource
 import java.io.IOException
+import java.util.concurrent.CancellationException
 
 private const val ORIGIN = "https://reader.invalid"
 private const val ENTRY = "$ORIGIN/reader/index.html"
 
 private fun BookSettings.toJson() = JSONObject().put("fontPercent", fontPercent)
     .put("lineHeight", lineHeight.toDouble()).put("marginDp", marginDp).put("theme", theme).put("pageTurn", pageTurn)
-    .put("fontFamily", fontFamily)
+    .put("fontFamily", fontFamily).put("tapSide", tapSide).put("tapZone", tapZone)
+    .put("chapterHint", chapterHint)
 
 private fun ReaderPlace.toJson() = JSONObject().put("locator", locator).put("percentage", percentage).put("chapter", chapter)
 
@@ -37,16 +39,38 @@ private fun JSONObject.toPlace(): ReaderPlace? {
 
 private data class Footnote(val text: String, val target: String)
 
-/** This local origin has exactly four assets and the selected private book. Every other request gets a local 404. */
-private class PublicationClient(private val context: Context, private val book: File, val loaded: (WebView) -> Unit) : WebViewClient() {
+/** App scripts and the publication use separate synthetic origins. Neither forwards requests to the network. */
+private class PublicationClient(private val context: Context, private val book: ReaderSource, val loaded: (WebView) -> Unit) : WebViewClient() {
     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse {
         val url = request.url
+        if (request.method == "GET" && url.scheme == "https" && url.encodedAuthority == "book.invalid") {
+            val name = url.path?.removePrefix("/").orEmpty()
+            try {
+                val bytes = book.archive?.entry(name)
+                if (bytes != null) {
+                    val extension = name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+                    val mime = when (extension) {
+                        "opf", "ncx", "xml" -> "application/xml"
+                        "html", "htm" -> "text/html"
+                        "xhtml" -> "application/xhtml+xml"
+                        "svg" -> "image/svg+xml"
+                        "css" -> "text/css"
+                        else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
+                    }
+                    return WebResourceResponse(mime, null, 200, "OK", mapOf("Access-Control-Allow-Origin" to ORIGIN,
+                        "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), bytes.inputStream())
+                }
+            } catch (_: IOException) { /* The reader handles a failed resource load. */ }
+              catch (_: CancellationException) { /* The book was closed. */ }
+            return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
+                mapOf("Access-Control-Allow-Origin" to ORIGIN, "Cache-Control" to "no-store"), byteArrayOf().inputStream())
+        }
         if (request.method == "GET" && url.scheme == "https" && url.encodedAuthority == "reader.invalid") {
             val path = url.encodedPath
             try {
                 when (path) {
-                    "/reader/publication.epub" -> return WebResourceResponse("application/epub+zip", null, book.inputStream())
-                    "/reader/index.html", "/reader/epub.min.js", "/reader/jszip.min.js", "/reader/reader.js" -> {
+                    "/reader/publication.epub" -> return WebResourceResponse("application/epub+zip", null, book.epubStream())
+                    "/reader/index.html", "/reader/epub.min.js", "/reader/jszip.min.js", "/reader/reader-tools.js", "/reader/reader.js" -> {
                         val mime = if (path.endsWith(".html")) "text/html" else "text/javascript"
                         return WebResourceResponse(mime, "UTF-8", context.assets.open(path.removePrefix("/")))
                     }
@@ -67,17 +91,20 @@ private class PublicationClient(private val context: Context, private val book: 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun EpubPane(
-    file: File, initial: ReaderPlace?, style: BookSettings, highlights: List<String>,
+    file: ReaderSource, initial: ReaderPlace?, style: BookSettings, highlights: List<String>,
     onControl: (((ReaderAction) -> Unit)?) -> Unit, onPlace: (ReaderPlace, Boolean) -> Unit,
     onChapters: (List<Chapter>) -> Unit, onSelection: (BookSelection) -> Unit,
     onTap: () -> Unit, onError: (String) -> Unit,
     spread: Boolean = false, onLinkNavigate: (ReaderPlace) -> Unit = {},
+    inspection: ReaderInspection, onRemainder: (String) -> Unit, onIllustration: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val currentStyle by rememberUpdatedState(style)
     val currentHighlights by rememberUpdatedState(highlights)
     val currentSpread by rememberUpdatedState(spread)
     val linkNavigate by rememberUpdatedState(onLinkNavigate)
+    val showHint by rememberUpdatedState(onRemainder)
+    val showImage by rememberUpdatedState(onIllustration)
     val place by rememberUpdatedState(onPlace)
     val tap by rememberUpdatedState(onTap)
     val select by rememberUpdatedState(onSelection)
@@ -108,11 +135,20 @@ internal fun EpubPane(
                             "connected" -> {
                                 port = channel
                                 send(JSONObject().put("type", "open").put("initial", initial?.toJson())
+                                    .put("streaming", file.archive != null)
                                     .put("settings", currentStyle.toJson()).put("spread", currentSpread).put("highlights", JSONArray(currentHighlights)))
                                 control { action -> send(JSONObject().put("type", action.type)
-                                    .put("locator", action.locator).put("percentage", action.percentage).put("persist", action.persist)) }
+                                    .put("locator", action.locator).put("percentage", action.percentage).put("persist", action.persist)
+                                    .put("id", action.requestId).put("query", action.query)) }
                             }
                             "place" -> event.toPlace()?.let { place(it, event.optBoolean("persist")) }
+                            "searchResults", "positionPreview" -> inspection.receive(event)
+                            "chapterRemainder" -> showHint(when {
+                                event.has("pages") -> quantityHint(event.optInt("pages"), false)
+                                event.has("minutes") -> quantityHint(event.optInt("minutes"), true)
+                                else -> ""
+                            })
+                            "illustration" -> showImage(event.optBoolean("open"))
                             "linkOrigin" -> event.toPlace()?.let(linkNavigate)
                             "footnote" -> {
                                 val target = event.optString("target")

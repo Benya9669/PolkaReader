@@ -12,6 +12,15 @@
   const customFonts = new WeakMap();
   const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
   const send = (type, data = {}) => port.postMessage(JSON.stringify({type, ...data}));
+  const illustration = publicationTools.illustrationViewer(send);
+  let explorer;
+  function reportRemainder() {
+    if (!ready) return;
+    let amount;
+    try { amount = publicationTools.chapterRemainder(view, chapters, settings.chapterHint); }
+    catch { console.warn('Chapter estimate unavailable in this layout'); }
+    send('chapterRemainder', amount || {});
+  }
   function sizeViewport() {
     // Android WebView can resolve both 100% and 100vh to zero in an embedded
     // layout. Its actual visible viewport is available in CSS pixels here.
@@ -63,6 +72,7 @@
     anchor = place.locator;
     lastPlace = place;
     send('place', {...place, persist});
+    reportRemainder();
   }
 
   const advance = (rendition, direction) => direction > 0 ? rendition.next() : rendition.prev();
@@ -222,7 +232,7 @@
     const doc = contents.document;
     const meta = doc.createElement('meta');
     meta.httpEquiv = 'Content-Security-Policy';
-    meta.content = "default-src 'none'; img-src blob: data:; style-src 'unsafe-inline' blob:; font-src blob: data:; media-src blob: data:; form-action 'none'";
+    meta.content = "default-src 'none'; img-src blob: data: https://book.invalid; style-src 'unsafe-inline' blob: https://book.invalid; font-src blob: data: https://book.invalid; media-src blob: data: https://book.invalid; form-action 'none'";
     doc.head.prepend(meta);
     // Keep the stylesheet in the chapter head. Wrapping book text or adding
     // nodes to its body would change the EPUB CFIs shared with the web reader.
@@ -282,8 +292,10 @@
   function edgeTap(x) {
     const bounds = stage.getBoundingClientRect();
     const fraction = (x-bounds.left)/bounds.width;
-    if (fraction < .23 || fraction > .77) {
-      const direction = (fraction < .23 ? -1 : 1) * (rtl() ? -1 : 1);
+    const edge = Math.min(36,Math.max(12,Number(settings.tapZone) || 23)) / 100;
+    if (fraction < edge || fraction > 1-edge) {
+      const forwardOnLeft = settings.tapSide === 'left' || (settings.tapSide !== 'right' && rtl());
+      const direction = (fraction < edge ? -1 : 1) * (forwardOnLeft ? -1 : 1);
       enqueue(() => move(direction));
     } else send('tap');
   }
@@ -293,6 +305,17 @@
     secureContent(contents);
     const doc = contents.document, selected = () => contents.window.getSelection()?.isCollapsed === false;
     doc.documentElement.style.touchAction = 'pan-y pinch-zoom';
+    for (const image of doc.querySelectorAll('img,svg')) {
+      if (image.closest('a,button,[aria-hidden="true"]') || image.getAttribute('alt') === '') continue;
+      image.setAttribute('role','button');
+      image.setAttribute('tabindex','0');
+      const label = image.getAttribute('alt') || image.getAttribute('aria-label') || image.querySelector('title')?.textContent;
+      image.setAttribute('aria-label',label ? 'Увеличить: ' + label : 'Увеличить иллюстрацию');
+      image.addEventListener('keydown', e => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        if (illustration.open(image)) e.preventDefault();
+      });
+    }
     let touch, ignoreClickUntil = 0;
     function cancel() {
       if (touch?.session) {
@@ -352,6 +375,10 @@
         e.preventDefault(); e.stopImmediatePropagation(); return;
       }
       const link = e.target.closest?.('a[href]');
+      const image = e.target.closest?.('img,svg');
+      if (image && illustration.open(image)) {
+        e.preventDefault(); e.stopImmediatePropagation(); return;
+      }
       if (link) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -400,6 +427,14 @@
   async function reflow(style, double = spread) {
     if (!ready) return;
     if (turn) resetTurn(turn);
+    if (style && double === spread && ['fontPercent','fontFamily','marginDp','lineHeight','theme']
+      .every(key => settings[key] === style[key])) {
+      // Handedness, hotkeys and turn effects do not change the pagination.
+      const changedHint = settings.chapterHint !== style.chapterHint;
+      settings = style;
+      if (changedHint) reportRemainder();
+      return;
+    }
     const saved = anchor;
     if (spread !== double) {
       spread = double;
@@ -410,6 +445,8 @@
     view.resize(pane.clientWidth, pane.clientHeight, saved);
     await frame();
     if (saved) await view.display(saved);
+    await frame();
+    reportRemainder();
     // A different line width moves the page boundary. Keep the semantic anchor
     // until the reader actually navigates, even if reflow emits 'relocated'.
   }
@@ -461,9 +498,13 @@
   }
 
   async function open(config) {
-    const response = await fetch('publication.epub', {credentials: 'omit'});
-    if (!response.ok) throw new Error('EPUB unavailable');
-    book = ePub(await response.arrayBuffer(), {replacements: 'blobUrl'});
+    if (config.streaming) {
+      book = ePub('https://book.invalid/', {replacements: 'none'});
+    } else {
+      const response = await fetch('publication.epub', {credentials: 'omit'});
+      if (!response.ok) throw new Error('EPUB unavailable');
+      book = ePub(await response.arrayBuffer(), {replacements: 'blobUrl'});
+    }
     while (window.innerHeight <= 0) await frame();
     sizeViewport();
     spread = Boolean(config.spread);
@@ -478,6 +519,7 @@
     applyStyle(config.settings);
     const nav = await book.loaded.navigation;
     collectChapters(nav.toc);
+    explorer = publicationTools.explorer(book,chapters,send);
     send('chapters', {items: chapters});
     await view.display(config.initial?.locator || undefined);
     const rendered = await readLocation();
@@ -501,6 +543,11 @@
     port = event.ports[0];
     port.onmessage = message => {
       const action = JSON.parse(message.data);
+      // Inspection can outlive its dialog; fresh requests and dismissal cancel obsolete results.
+      if (action.type === 'search') return explorer?.search(action.query || '',action.id);
+      if (action.type === 'previewPosition') return explorer?.preview(action.percentage,action.id);
+      if (action.type === 'cancelInspection') return explorer?.cancel();
+      if (action.type === 'closeIllustration') return illustration.close();
       if (turn && (action.type === 'style' || action.type === 'jump' || action.type === 'link')) resetTurn(turn);
       enqueue(async () => {
         switch (action.type) {

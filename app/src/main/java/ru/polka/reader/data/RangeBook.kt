@@ -76,8 +76,10 @@ internal class RangeEpub(private val book: RangeBook) {
             val compressed = index.u32(pos + 20)
             val size = index.u32(pos + 24)
             val header = index.u32(pos + 42)
+            // The WebView path validates a complete decoded resource before exposing it. Use a full
+            // publication for larger resources instead of failing halfway through a chapter.
             if (index.u16(pos + 8) and 1 != 0 || method !in listOf(0, 8) || header >= offset ||
-                size > Int.MAX_VALUE || compressed > Int.MAX_VALUE) throw Unsupported()
+                size > 24L * 1024 * 1024 || compressed > 24L * 1024 * 1024) throw Unsupported()
             if (!name.endsWith("/") && entries.put(name, Entry(header, method, compressed.toInt(), size.toInt(),
                     index.u32(pos + 16))) != null) throw Unsupported()
             pos = next
@@ -88,8 +90,6 @@ internal class RangeEpub(private val book: RangeBook) {
     fun entry(name: String): ByteArray? {
         if (name.length > 2048 || name.contains('\\') || name.split('/').any { it in listOf("", ".", "..") }) return null
         val entry = entries[name] ?: return null
-        // Never allocate according to unbounded archive-supplied lengths or return unchecked decompressed bytes.
-        if (entry.size > 24 * 1024 * 1024 || entry.compressed > 24 * 1024 * 1024) throw IOException("Ресурс EPUB слишком велик")
         val header = book.bytes(entry.header, 30)
         if (header.u32(0) != 0x04034b50L || header.u16(8) != entry.method) throw IOException("Повреждён заголовок EPUB")
         val data = book.bytes(entry.header + 30 + header.u16(26) + header.u16(28), entry.compressed)

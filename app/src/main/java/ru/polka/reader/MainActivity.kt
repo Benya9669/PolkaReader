@@ -1,6 +1,8 @@
 package ru.polka.reader
 
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.Window
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -25,12 +27,21 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import ru.polka.reader.data.Account
 import ru.polka.reader.data.PolkaData
+import ru.polka.reader.reader.ReaderVolumeKeys
 import ru.polka.reader.sync.ProgressSync
 
 class MainActivity : ComponentActivity() {
+    internal val readerVolumeKeys = ReaderVolumeKeys()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // Intercept only opted-in reader keys, before a focused WebView or the volume panel handles them.
+        val original = window.callback
+        window.callback = object : Window.Callback by original {
+            override fun dispatchKeyEvent(event: KeyEvent) =
+                readerVolumeKeys.handle(event) || original.dispatchKeyEvent(event)
+        }
         enableEdgeToEdge()
         val data = PolkaData.get(applicationContext)
         val sync = ProgressSync.get(applicationContext)

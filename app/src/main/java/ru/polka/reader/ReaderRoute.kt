@@ -18,7 +18,6 @@ import kotlinx.coroutines.launch
 import ru.polka.reader.data.*
 import ru.polka.reader.reader.*
 import ru.polka.reader.sync.*
-import java.io.File
 
 private fun ReadingPoint.toReader() = ReaderPlace(locator, percentage, chapter)
 private fun description(p: ReadingPoint?): String = p?.let {
@@ -28,7 +27,7 @@ private fun description(p: ReadingPoint?): String = p?.let {
 @Composable
 internal fun OpenReader(account: Account, data: PolkaData, sync: ProgressSync, fileId: Long, workId: Long?,
                         appearance: Appearance, onExit: () -> Unit) {
-    var source by remember(fileId) { mutableStateOf<Download?>(null) }
+    var source by remember(account.scope, fileId) { mutableStateOf<Pair<Download, ReaderSource>?>(null) }
     var permanent by remember(fileId) { mutableStateOf(false) }
     var progress by remember(fileId) { mutableStateOf<Pair<Long, Long>?>(null) }
     var error by remember(fileId) { mutableStateOf<String?>(null) }
@@ -37,16 +36,16 @@ internal fun OpenReader(account: Account, data: PolkaData, sync: ProgressSync, f
         error = null
         progress = null
         try {
-            data.withReadingFile(account.scope, fileId, workId, { bytes, total -> progress = bytes to total }) { copy, offline ->
+            data.withReadingSource(account.scope, fileId, workId, { bytes, total -> progress = bytes to total }) { copy, publication, offline ->
                 permanent = offline
-                source = copy
-                awaitCancellation() // Keep this file available to the renderer for the screen's lifetime.
+                source = copy to publication
+                awaitCancellation() // Keep the stream or private copy available for the screen's lifetime.
             }
         } catch (e: CancellationException) { throw e } catch (e: Exception) { error = friendly(e) }
     }
     val copy = source
     if (copy != null) {
-        ReaderRoute(account, data, sync, copy, permanent, appearance, onExit)
+        ReaderRoute(account, data, sync, copy.first, copy.second, permanent, appearance, onExit)
     } else {
         BackHandler { onExit() }
         Box(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -67,7 +66,7 @@ internal fun OpenReader(account: Account, data: PolkaData, sync: ProgressSync, f
 }
 
 @Composable
-private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, copy: Download, permanent: Boolean,
+private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, copy: Download, publication: ReaderSource, permanent: Boolean,
                         appearance: Appearance, onExit: () -> Unit) {
     val scope = account.scope
     val fileId = copy.fileId
@@ -80,6 +79,7 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     var initialError by remember { mutableStateOf<String?>(null) }
     val local by remember(scope, fileId) { sync.observe(scope, fileId) }.collectAsState(initial = null)
     val settings by appearance.book.collectAsState(initial = BookSettings())
+    val pdfCrop by remember(scope, fileId) { appearance.fileCrop(scope, fileId) }.collectAsState(initial = PdfCrop())
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, fileId) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) sync.flush(scope, fileId) }
@@ -89,7 +89,6 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     LaunchedEffect(fileId, retry) {
         initialError = null
         try {
-            require(File(copy.path).isFile) { "Локальная копия отсутствует. Скачайте файл повторно." }
             val restored = sync.open(scope, fileId)
             alternate = restored.alternate
             start = restored
@@ -126,12 +125,13 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
         }
     }
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-        BookReader(File(copy.path), copy.format, copy.title, restored.point?.toReader(), settings,
+        BookReader(publication, copy.format, copy.title, restored.point?.toReader(), settings,
             { coroutine.launch { appearance.save(it) } },
             { p -> sync.record(scope, fileId, ReadingPoint(p.locator, p.percentage, p.chapter), forceNext); forceNext = false },
             onExit, { bookmark = it }, { selection = it }, { marks = true },
             annotations.filter { !it.removed && it.quote.isNotEmpty() }.map { it.locator }.distinct(), status, jump,
-            onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } })
+            onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } },
+            pdfCrop = pdfCrop, onPdfCrop = { crop -> coroutine.launch { appearance.saveCrop(scope, fileId, crop) } })
     }
     val row = local
     if (row?.conflictVersion != null) {

@@ -40,7 +40,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import java.io.File
+import ru.polka.reader.data.ReaderSource
 import kotlin.math.roundToInt
 
 data class ReaderPlace(val locator: String, val percentage: Double, val chapter: String? = null)
@@ -51,18 +51,22 @@ data class BookSettings(
     val fontPercent: Int = 110, val lineHeight: Float = 1.5f, val marginDp: Int = 16,
     val theme: String = "light", val pageTurn: String = "slide", val spread: Boolean = true, val profile: String = "day",
     val fontFamily: String = "book",
+    val chapterHint: String = "off",
+    val tapSide: String = "auto", val tapZone: Int = 23, val volumeTurn: Boolean = false,
 )
 internal data class Chapter(val label: String, val href: String, val depth: Int)
-internal data class ReaderAction(val type: String, val locator: String? = null, val percentage: Double? = null, val persist: Boolean = true)
+internal data class ReaderAction(val type: String, val locator: String? = null, val percentage: Double? = null,
+                                val persist: Boolean = true, val requestId: Int? = null, val query: String? = null)
 
 @Composable
-fun BookReader(
-    file: File, format: String, title: String, initial: ReaderPlace?, settings: BookSettings,
+internal fun BookReader(
+    file: ReaderSource, format: String, title: String, initial: ReaderPlace?, settings: BookSettings,
     onSettings: (BookSettings) -> Unit, onPosition: (ReaderPlace) -> Unit, onExit: () -> Unit,
     onBookmark: (ReaderPlace) -> Unit, onSelection: (BookSelection) -> Unit, onShowMarks: () -> Unit,
     highlights: List<String> = emptyList(), status: String = "", jump: ReaderJump? = null,
     onProfile: (Boolean) -> Unit,
-) = key(file.absolutePath) {
+    pdfCrop: PdfCrop = PdfCrop(), onPdfCrop: (PdfCrop) -> Unit = {},
+) = key(file.key) {
     val pdf = format.equals("pdf", ignoreCase = true)
     val accessibility = LocalContext.current.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     val motionEnabled = systemMotionEnabled()
@@ -77,6 +81,15 @@ fun BookReader(
     var error by remember { mutableStateOf<String?>(null) }
     var lastJump by rememberSaveable { mutableStateOf<Long?>(null) }
     var control by remember { mutableStateOf<((ReaderAction) -> Unit)?>(null) }
+    val inspection = remember { ReaderInspection() }
+    var chapterHint by remember { mutableStateOf("") }
+    var illustrationOpen by remember { mutableStateOf(false) }
+    var draftMargins by rememberSaveable { mutableStateOf("") }
+    var sampleMargins by remember { mutableStateOf<(suspend () -> PdfCrop?)?>(null) }
+    val displayedCrop = if (menu == "pdfCrop") PdfCrop.decode(draftMargins) else pdfCrop
+    VolumePaging(settings.volumeTurn && menu.isEmpty() && !illustrationOpen && control != null && place != null && error == null) { next ->
+        control?.invoke(ReaderAction(if (next) "next" else "previous"))
+    }
     val currentPositionCallback by rememberUpdatedState(onPosition)
     val showPlace: (ReaderPlace, Boolean) -> Unit = { value, persist ->
         place = value
@@ -105,6 +118,7 @@ fun BookReader(
     }
     BackHandler {
         when {
+            illustrationOpen -> control?.invoke(ReaderAction("closeIllustration"))
             menu.isNotEmpty() -> menu = ""
             returnLocator != null -> goBackToReading()
             else -> onExit()
@@ -112,6 +126,7 @@ fun BookReader(
     }
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
         val paperPanelHeight = maxHeight * 0.48f
+        val cropPanelHeight = maxHeight * .58f
         val sideContents = maxWidth >= 840.dp && menu == "contents"
         val wideLandscape = maxWidth > maxHeight && maxWidth >= 840.dp && maxHeight >= 440.dp
         val spread = settings.spread && wideLandscape && (!sideContents || maxWidth - 272.dp >= 840.dp)
@@ -131,17 +146,19 @@ fun BookReader(
                 val tap = { panels = !panels }
                 if (pdf) {
                     PdfPane(file, initial, zoom, effectiveSettings.pageTurn, spread, { zoom = it }, { control = it }, showPlace,
-                        { totalPages = it }, tap, { error = it })
+                        { totalPages = it }, tap, { error = it }, crop = displayedCrop,
+                        tapSide = settings.tapSide, tapZone = settings.tapZone, onCropSampler = { sampleMargins = it })
                 } else {
                     EpubPane(file, initial, effectiveSettings, highlights, { control = it }, showPlace,
                         { chapters = it }, onSelection, tap, { error = it }, spread = spread,
-                        onLinkNavigate = { rememberOrigin(it) })
+                        onLinkNavigate = { rememberOrigin(it) }, inspection = inspection,
+                        onRemainder = { chapterHint = it }, onIllustration = { illustrationOpen = it })
                 }
                 if (place == null && error == null) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 }
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = panels && menu != "style", modifier = Modifier.matchParentSize(),
+                    visible = panels && menu != "style" && !illustrationOpen, modifier = Modifier.matchParentSize(),
                     enter = if (motionEnabled) fadeIn(tween(130)) else EnterTransition.None,
                     exit = if (motionEnabled) fadeOut(tween(100)) else ExitTransition.None,
                 ) {
@@ -152,6 +169,7 @@ fun BookReader(
                                 Text(title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.titleMedium)
                                 Tool(Icons.Default.AutoStories, "Перелистывание") { menu = "turn" }
+                                Tool(Icons.Default.Search, "Поиск в книге", place != null) { menu = "search" }
                                 Tool(Icons.Default.VisibilityOff, "Скрыть панели") { panels = false }
                             }
                         }
@@ -170,6 +188,7 @@ fun BookReader(
                                     Text(listOf(location, point?.let { "${(it.percentage * 100).roundToInt()}%" }.orEmpty())
                                         .filter { it.isNotBlank() }.joinToString(" · "), Modifier.weight(1f), maxLines = 2,
                                         overflow = TextOverflow.Ellipsis)
+                                    Tool(Icons.Default.Tune, "Просмотреть страницы", point != null) { menu = "preview" }
                                     Tool(Icons.AutoMirrored.Filled.ArrowForward, "Следующая страница", point != null) {
                                         control?.invoke(ReaderAction("next"))
                                     }
@@ -178,6 +197,7 @@ fun BookReader(
                                     horizontalArrangement = Arrangement.SpaceEvenly) {
                                     if (pdf) {
                                         Tool(Icons.Default.FindInPage, "Перейти к странице", point != null) { menu = "page" }
+                                        Tool(Icons.Default.Crop, "Поля PDF", point != null) { draftMargins = pdfCrop.encode(); menu = "pdfCrop" }
                                         Tool(Icons.Default.ZoomOut, "Уменьшить масштаб", zoom > 0.65f) { zoom = (zoom - .25f).coerceAtLeast(.65f) }
                                         Tool(Icons.Default.ZoomIn, "Увеличить масштаб", zoom < 3f) { zoom = (zoom + .25f).coerceAtMost(3f) }
                                     } else {
@@ -187,18 +207,32 @@ fun BookReader(
                                     Tool(Icons.Default.BookmarkAdd, "Добавить закладку", point != null) { point?.let(onBookmark) }
                                     Tool(Icons.Default.Bookmarks, "Закладки и заметки", true, onShowMarks)
                                 }
+                                if (!pdf && chapterHint.isNotBlank()) Text(chapterHint, Modifier.padding(start = 8.dp),
+                                    style = MaterialTheme.typography.labelMedium)
                                 if (status.isNotBlank()) Text(status, Modifier.padding(start = 8.dp, bottom = 4.dp),
                                     style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
                 }
-                if (!panels && accessibility.isTouchExplorationEnabled) {
+                if (!panels && !illustrationOpen && !pdf && chapterHint.isNotBlank()) {
+                    Surface(Modifier.align(Alignment.BottomCenter), shape = MaterialTheme.shapes.small) {
+                        Text(chapterHint, Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (!panels && !illustrationOpen && accessibility.isTouchExplorationEnabled) {
                     FilledTonalButton({ panels = true }, Modifier.align(Alignment.BottomEnd)) { Text("Панели чтения") }
                 }
                 if (menu == "style") {
                     PaperControls(settings, onSettings, onProfile, { menu = "" },
                         Modifier.align(Alignment.BottomCenter).widthIn(max = 580.dp).fillMaxWidth().heightIn(max = paperPanelHeight))
+                }
+                if (menu == "pdfCrop") {
+                    PdfCropControls(displayedCrop, { draftMargins = it.encode() }, sampleMargins,
+                        save = { onPdfCrop(displayedCrop); menu = "" }, cancel = { menu = "" },
+                        modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = 540.dp)
+                            .fillMaxWidth().heightIn(max = cropPanelHeight))
                 }
             }
         }
@@ -208,6 +242,9 @@ fun BookReader(
             confirmButton = { TextButton({ menu = "" }) { Text("Закрыть") } },
         )
     }
+    if (menu == "search") ReaderSearchDialog(file, pdf, inspection, control, { menu = "" }) { goTo(it); menu = "" }
+    if (menu == "preview" && place != null) PositionPreviewDialog(file, pdf, totalPages, pdfCrop, place!!,
+        inspection, control, { menu = "" }) { goTo(it); menu = "" }
     if (menu == "turn") {
         AlertDialog(onDismissRequest = { menu = "" }, title = { Text("Перелистывание") },
             text = {
@@ -231,6 +268,8 @@ fun BookReader(
                         Switch(checked = settings.spread, onCheckedChange = { onSettings(settings.copy(spread = it)) },
                             modifier = Modifier.semantics { contentDescription = "Две страницы" })
                     }
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    OneHandControls(settings, onSettings)
                 }
             },
             confirmButton = { TextButton({ menu = "" }) { Text("Готово") } })
@@ -320,6 +359,13 @@ private fun PaperControls(settings: BookSettings, update: (BookSettings) -> Unit
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("light" to "Светлая", "sepia" to "Сепия", "dark" to "Тёмная").forEach { (value, label) ->
                         FilterChip(selected = settings.theme == value, onClick = { update(settings.copy(theme = value)) }, label = { Text(label) })
+                    }
+                }
+                Text("До конца главы", style = MaterialTheme.typography.titleSmall)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("off" to "Скрыть", "pages" to "Страницы", "minutes" to "Минуты").forEach { (value, label) ->
+                        FilterChip(selected = settings.chapterHint == value,
+                            onClick = { update(settings.copy(chapterHint = value)) }, label = { Text(label) })
                     }
                 }
             }

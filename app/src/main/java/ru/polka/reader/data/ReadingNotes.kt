@@ -54,17 +54,17 @@ class ReadingNotes internal constructor(context: Context, private val data: Polk
         schedule(item.scope, item.fileId)
     }
 
-    private fun schedule(scope: String, file: Long) {
+    private fun schedule(scope: String, file: Long, policy: ExistingWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE) {
         val job = OneTimeWorkRequestBuilder<NotesWorker>()
             .setInputData(workDataOf("scope" to scope, "file" to file))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
-        work.enqueueUniqueWork("notes-$scope-$file", ExistingWorkPolicy.APPEND_OR_REPLACE, job)
+        work.enqueueUniqueWork("notes-$scope-$file", policy, job)
         // WorkManager may wait for validated internet on a Wi-Fi-only home LAN.
         if (canSync(scope) && network?.activeNetwork != null) background.launch { send(scope, file) }
     }
 
     internal suspend fun resume(scope: String) {
-        if (canSync(scope)) dao.pendingFiles(scope).forEach { schedule(scope, it) }
+        if (canSync(scope)) dao.pendingFiles(scope).forEach { schedule(scope, it, ExistingWorkPolicy.KEEP) }
     }
 
     suspend fun refresh(scope: String, file: Long) = lock(scope, file).withLock {

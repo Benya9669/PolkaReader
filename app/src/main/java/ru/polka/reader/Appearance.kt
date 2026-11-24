@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.map
 import ru.polka.reader.reader.BookSettings
+import ru.polka.reader.reader.PdfCrop
 
 private val Context.preferences by preferencesDataStore("appearance")
 private val font = intPreferencesKey("reader_font")
@@ -22,6 +23,7 @@ private val paper = stringPreferencesKey("reader_paper")
 private val pageTurn = stringPreferencesKey("reader_page_turn")
 private val activeProfile = stringPreferencesKey("reader_profile")
 private val wideSpread = booleanPreferencesKey("reader_wide_spread")
+private val chapterHint = stringPreferencesKey("reader_chapter_hint")
 private val nightFont = intPreferencesKey("night_font")
 private val nightLeading = floatPreferencesKey("night_leading")
 private val nightMargin = intPreferencesKey("night_margin")
@@ -29,6 +31,9 @@ private val nightPaper = stringPreferencesKey("night_paper")
 private val family = stringPreferencesKey("reader_font_family")
 private val nightFamily = stringPreferencesKey("night_font_family")
 private val appTheme = stringPreferencesKey("app_theme")
+private val tapSide = stringPreferencesKey("reader_tap_side")
+private val tapZone = intPreferencesKey("reader_tap_zone")
+private val volumeTurn = booleanPreferencesKey("reader_volume_turn")
 
 internal class Appearance(private val context: Context) {
     val book = context.preferences.data.map { values ->
@@ -41,9 +46,20 @@ internal class Appearance(private val context: Context) {
             pageTurn = values[pageTurn] ?: "slide", spread = values[wideSpread] ?: true,
             profile = if (night) "night" else "day",
             fontFamily = values[if (night) nightFamily else family] ?: "book",
+            chapterHint = values[chapterHint] ?: "off",
+            tapSide = values[tapSide] ?: "auto",
+            tapZone = (values[tapZone] ?: 23).coerceIn(12, 36),
+            volumeTurn = values[volumeTurn] ?: false,
         )
     }
     val theme = context.preferences.data.map { it[appTheme] ?: "Системная" }
+    fun fileCrop(scope: String, fileId: Long) = context.preferences.data.map {
+        PdfCrop.decode(it[stringPreferencesKey("pdf_crop_${scope}_$fileId")])
+    }
+    suspend fun saveCrop(scope: String, fileId: Long, crop: PdfCrop) {
+        val key = stringPreferencesKey("pdf_crop_${scope}_$fileId")
+        context.preferences.edit { if (crop == PdfCrop()) it.remove(key) else it[key] = crop.encode() }
+    }
     suspend fun setTheme(value: String) { context.preferences.edit { it[appTheme] = value } }
     suspend fun selectProfile(night: Boolean) {
         context.preferences.edit { it[activeProfile] = if (night) "night" else "day" }
@@ -58,6 +74,10 @@ internal class Appearance(private val context: Context) {
             it[if (night) nightFamily else family] = value.fontFamily
             it[pageTurn] = value.pageTurn
             it[wideSpread] = value.spread
+            it[chapterHint] = value.chapterHint
+            it[tapSide] = value.tapSide
+            it[tapZone] = value.tapZone
+            it[volumeTurn] = value.volumeTurn
         }
     }
 }

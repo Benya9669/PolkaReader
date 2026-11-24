@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src 'self' blob:; style-src 'unsafe-inline' blob:; img-src blob: data:; font-src blob: data:; frame-src 'self' blob:; media-src blob: data:; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src 'self' blob: https://book.invalid; style-src 'unsafe-inline' blob: https://book.invalid; img-src blob: data: https://book.invalid; font-src blob: data: https://book.invalid; frame-src 'self' blob:; media-src blob: data: https://book.invalid; form-action 'none'">
   <title>Текст книги</title>
   <style>
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
@@ -14,10 +14,24 @@
     #page { z-index: 1; }
     #preview { visibility: hidden; pointer-events: none; }
     #back, #shadow { z-index: 2; pointer-events: none; display: none; }
+    #illustration { position:fixed; inset:0; z-index:5; display:flex; flex-direction:column; background:#191d1b; color:white; font:16px system-ui,sans-serif; }
+    #illustration[hidden] { display:none; }
+    #illustration header { display:flex; justify-content:flex-end; padding:4px 8px; }
+    #illustration button { min-width:48px; min-height:48px; background:transparent; color:white; border:0; font:inherit; }
+    #illustration button:focus-visible { outline:2px solid #efb667; }
+    .image-surface { flex:1; min-height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; touch-action:none; }
+    .image-surface img { max-width:100%; max-height:100%; user-select:none; pointer-events:none; }
   </style>
   <script defer src="jszip.min.js"></script>
   <script defer src="epub.min.js"></script>
+  <script defer src="reader-tools.js"></script>
   <script defer src="reader.js"></script>
 </head>
-<body><div id="book-turn"><main id="page" aria-label="Текст книги"></main><div id="preview" inert aria-hidden="true"></div><div id="shadow" aria-hidden="true"></div><div id="back" aria-hidden="true"></div></div></body>
+<body>
+  <div id="book-turn"><main id="page" aria-label="Текст книги"></main><div id="preview" inert aria-hidden="true"></div><div id="shadow" aria-hidden="true"></div><div id="back" aria-hidden="true"></div></div>
+  <section id="illustration" hidden role="dialog" aria-modal="true" aria-label="Иллюстрация">
+    <header><button data-minus aria-label="Уменьшить иллюстрацию">−</button><button data-plus aria-label="Увеличить иллюстрацию">+</button><button data-close>Закрыть</button></header>
+    <div class="image-surface"><img alt="Иллюстрация"></div>
+  </section>
+</body>
 </html>

@@ -9,6 +9,8 @@ internal class PdfPagePainter(private val density: Float) {
     private val shade = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
     private val bounds = RectF()
+    private val source = Rect()
+    var crop = PdfCrop()
     private val matrix = Matrix()
     private val src = FloatArray(8)
     private val dst = FloatArray(8)
@@ -31,9 +33,11 @@ internal class PdfPagePainter(private val density: Float) {
         val seam = if (spread) 1.5f * density else 0f
         val available = if (spread) w * .5f - seam else w
         val bitmap = page.bitmap
-        val fit = min(available.coerceAtLeast(1f) / bitmap.width, h / bitmap.height)
-        val pageW = fit * bitmap.width
-        val pageH = fit * bitmap.height
+        source.set(bitmap.width * crop.left / 100, bitmap.height * crop.top / 100,
+            bitmap.width - bitmap.width * crop.right / 100, bitmap.height - bitmap.height * crop.bottom / 100)
+        val fit = min(available.coerceAtLeast(1f) / source.width(), h / source.height())
+        val pageW = fit * source.width()
+        val pageH = fit * source.height()
         val left = when {
             !spread -> (w - pageW) / 2
             slot == 0 -> w / 2 - seam - pageW
@@ -46,7 +50,7 @@ internal class PdfPagePainter(private val density: Float) {
     private fun leaf(canvas: Canvas, pages: PdfPages, slot: Int, w: Float, h: Float, spread: Boolean) {
         val page = pages.pages.getOrNull(slot) ?: return
         val area = position(page, slot, w, h, spread)
-        canvas.drawBitmap(page.bitmap, null, area, paper)
+        canvas.drawBitmap(page.bitmap, source, area, paper)
         if (spread) {
             val inner = if (slot == 0) area.right else area.left
             val side = if (slot == 0) -1 else 1

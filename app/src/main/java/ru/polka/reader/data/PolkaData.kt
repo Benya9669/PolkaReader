@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
@@ -58,10 +60,15 @@ class PolkaData private constructor(private val context: Context) {
     }
 
     private suspend fun <T> call(scope: String, method: String, path: String, body: JSONObject? = null,
-                                 consume: (Response) -> T): T = withContext(Dispatchers.IO) {
+                                 range: LongRange? = null, ifRange: String? = null, consume: (Response) -> T): T = withContext(Dispatchers.IO) {
         val session = accounts.withLock { credentialsLocked(scope) }
         try {
-            transport.execute(transport.build(session.account.server, path, method, body, session), consume)
+            val request = transport.build(session.account.server, path, method, body, session)
+            val ranged = range?.let {
+                request.newBuilder().header("Accept-Encoding", "identity").header("Range", "bytes=${it.first}-${it.last}")
+                    .apply { ifRange?.let { validator -> header("If-Range", validator) } }.build()
+            }
+            transport.execute(ranged ?: request, consume)
         } catch (e: ApiError) {
             if (e.status == 401) accounts.withLock {
                 // An old request may finish after a fresh login, even for the same user.
@@ -132,7 +139,7 @@ class PolkaData private constructor(private val context: Context) {
     }
 
     suspend fun request(scope: String, method: String, path: String, body: JSONObject? = null): JSONObject =
-        JSONObject(call(scope, method, path, body, transport::json))
+        JSONObject(call(scope, method, path, body, consume = transport::json))
 
     private suspend fun list(scope: String, path: String) = JSONArray(call(scope, "GET", path, consume = transport::json))
 
@@ -229,11 +236,12 @@ class PolkaData private constructor(private val context: Context) {
         }
     }
 
-    suspend fun <T> withReadingFile(scope: String, fileId: Long, workId: Long?,
-                                    onProgress: (Long, Long) -> Unit, read: suspend (Download, Boolean) -> T): T {
+    internal suspend fun <T> withReadingSource(scope: String, fileId: Long, workId: Long?,
+                                    onProgress: (Long, Long) -> Unit, read: suspend (Download, ReaderSource, Boolean) -> T): T {
         account(scope)
         val offline = dao.download(scope, fileId)
-        if (offline != null && withContext(Dispatchers.IO) { File(offline.path).isFile }) return read(offline, true)
+        if (offline != null && withContext(Dispatchers.IO) { File(offline.path).isFile })
+            return read(offline, ReaderSource.Local(File(offline.path)), true)
         val book = if (workId != null) {
             dao.cached(scope, "/books/$workId")?.let { parseBook(JSONObject(it)) }
                 ?.takeIf { cachedBook -> cachedBook.editions.any { ed -> ed.files.any { it.id == fileId && it.readable } } }
@@ -242,11 +250,39 @@ class PolkaData private constructor(private val context: Context) {
         val edition = book.editions.firstOrNull { ed -> ed.files.any { it.id == fileId && it.readable } }
             ?: throw IOException("Читаемый файл отсутствует в этом издании")
         val file = edition.files.first { it.id == fileId }
+        fun metadata(path: String) = Download(scope, file.id, book.id, edition.id, book.title, book.authors, file.name,
+            file.format, path, file.size)
+        // Small files are cheaper to validate and cache in one GET. Keep complete copies made by older clients usable offline.
+        if (file.size > 512L * 1024 && !withContext(Dispatchers.IO) { readingCache.contains(scope, file) }) {
+            var validator: String? = null
+            var remote: ReaderSource.Remote? = null
+            val parent = currentCoroutineContext()[Job]
+            try {
+                try {
+                    withContext(Dispatchers.IO) {
+                        remote = ReaderSource.Remote.open(context, scope, file, parent) { start, end ->
+                            call(scope, "GET", "/files/${file.id}", range = start..end, ifRange = validator) { response ->
+                                if (response.code == 200 && validator == null) throw RangeUnavailable()
+                                if (response.code != 206 || response.header("Content-Range") != "bytes $start-$end/${file.size}")
+                                    throw IOException("Файл на сервере изменился или вернулся неверный диапазон")
+                                val tag = response.header("ETag")
+                                if (tag == null || !tag.startsWith('"') || !tag.endsWith('"')) throw RangeUnavailable()
+                                if (validator != null && tag != validator) throw IOException("Версия книги на сервере изменилась")
+                                validator = tag
+                                val source = response.body?.source() ?: throw IOException("Сервер вернул пустой ответ")
+                                if (source.request(end - start + 2)) throw IOException("Ответ выходит за запрошенный диапазон")
+                                source.readByteArray(end - start + 1)
+                            }.also { account(scope) }
+                        }
+                    }
+                } catch (_: RangeUnavailable) { /* Use the SHA-256-checked full-file path below. */ }
+                  catch (_: RangeEpub.Unsupported) { /* Nonstandard or ZIP64 EPUB. */ }
+                remote?.let { return read(metadata(""), it, false) }
+            } finally { remote?.close() }
+        }
         return readingCache.withFile(scope, file, { target -> fetchChecked(scope, file, target, onProgress) }) { target ->
             account(scope)
-            val copy = Download(scope, file.id, book.id, edition.id, book.title, book.authors, file.name,
-                file.format, target.absolutePath, file.size)
-            read(copy, false)
+            read(metadata(target.absolutePath), ReaderSource.Local(target), false)
         }
     }
 

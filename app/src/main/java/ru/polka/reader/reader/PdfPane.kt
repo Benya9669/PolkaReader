@@ -9,7 +9,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -27,7 +26,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.io.File
+import ru.polka.reader.data.ReaderSource
 import kotlin.math.*
 
 internal data class PdfPage(val bitmap: Bitmap, val description: String)
@@ -56,8 +55,8 @@ private fun pageDescription(page: PdfRenderer.Page, number: Int, count: Int): St
     }
 }
 
-private fun renderPages(file: File, requested: Int, width: Int, spread: Boolean): PdfPages {
-    val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+private fun renderPages(file: ReaderSource, requested: Int, width: Int, spread: Boolean): PdfPages {
+    val fd = file.openPdf()
     val renderer = try { PdfRenderer(fd) } catch (e: Exception) { fd.close(); throw e }
     return renderer.use { document ->
         val count = document.pageCount
@@ -81,7 +80,7 @@ private fun renderPages(file: File, requested: Int, width: Int, spread: Boolean)
     }
 }
 
-private class PdfCanvas(context: Context, private val file: File, first: Int) : View(context) {
+private class PdfCanvas(context: Context, private val file: ReaderSource, first: Int) : View(context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val decoder = Mutex()
     private var load: Job? = null
@@ -94,6 +93,8 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
     private var persistJump = false
     private var spread = false
     private var mode = "slide"
+    private var tapSide = "auto"
+    private var tapZone = 23
     private val step get() = if (spread) 2 else 1
 
     private var direction = 0
@@ -136,10 +137,37 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
 
     init { isClickable = true; isFocusable = true }
 
-    fun configure(newZoom: Float, turnMode: String, newSpread: Boolean) {
+    fun configure(newZoom: Float, turnMode: String, newSpread: Boolean, crop: PdfCrop, side: String, edge: Int) {
+        tapSide = side
+        tapZone = edge
+        if (painter.crop != crop) {
+            resetTurn()
+            panX = 0f
+            panY = 0f
+            painter.crop = crop
+            invalidate()
+        }
         if (mode != turnMode) { resetTurn(); mode = turnMode }
         if (!scale.isInProgress && zoom != newZoom) { zoom = newZoom; invalidate() }
         if (spread != newSpread) { spread = newSpread; reload() }
+    }
+
+    suspend fun suggestCrop(): PdfCrop? {
+        val pages = current ?: return null
+        val bitmap = pages.pages.getOrNull(number - pages.first)?.bitmap ?: return null
+        return withContext(Dispatchers.Default) {
+            val ratio = min(1.0, 320.0 / max(bitmap.width, bitmap.height))
+            val width = max(1, (bitmap.width * ratio).roundToInt())
+            val height = max(1, (bitmap.height * ratio).roundToInt())
+            val sample = Bitmap.createScaledBitmap(bitmap, width, height, true)
+            try {
+                val pixels = IntArray(width * height)
+                sample.getPixels(pixels, 0, width, 0, 0, width, height)
+                PdfCrop.detect(pixels, width, height)
+            } finally {
+                if (sample !== bitmap) sample.recycle()
+            }
+        }
     }
 
     private fun reload() {
@@ -216,6 +244,7 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
             if (direction != 0) settle(true)
             return
         }
+        if (action.type != "jump") return
         val total = current?.total ?: return
         val exact = (action.locator?.toIntOrNull() ?: action.percentage?.let { ceil(it * total).toInt() } ?: number)
             .coerceIn(1, total)
@@ -302,9 +331,9 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
                     val directedFling = -vx * direction >= 750 * density && abs(dx) >= max(slop * 2f, 28 * density)
                     settle(progress >= .25f || directedFling)
                 } else if (!moved && !multiple) {
-                    when {
-                        zoom <= 1.01f && x < width * .22f -> navigate(ReaderAction("previous"))
-                        zoom <= 1.01f && x > width * .78f -> navigate(ReaderAction("next"))
+                    when (if (zoom <= 1.01f) pageTapDirection(x / width.coerceAtLeast(1), tapZone, tapSide) else 0) {
+                        -1 -> navigate(ReaderAction("previous"))
+                        1 -> navigate(ReaderAction("next"))
                         else -> performClick()
                     }
                 }
@@ -335,19 +364,21 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
 
 @Composable
 internal fun PdfPane(
-    file: File, initial: ReaderPlace?, zoom: Float, pageTurn: String, spread: Boolean, onZoom: (Float) -> Unit,
+    file: ReaderSource, initial: ReaderPlace?, zoom: Float, pageTurn: String, spread: Boolean, onZoom: (Float) -> Unit,
     onControl: (((ReaderAction) -> Unit)?) -> Unit, onPlace: (ReaderPlace, Boolean) -> Unit,
     onCount: (Int) -> Unit, onTap: () -> Unit, onError: (String) -> Unit,
+    crop: PdfCrop, tapSide: String, tapZone: Int, onCropSampler: ((suspend () -> PdfCrop?)?) -> Unit,
 ) {
     val context = LocalContext.current
     val view = remember(file) { PdfCanvas(context, file, initial?.locator?.toIntOrNull() ?: 1) }
     DisposableEffect(view) {
         onControl(view::navigate)
-        onDispose { onControl(null); view.release() }
+        onCropSampler(view::suggestCrop)
+        onDispose { onControl(null); onCropSampler(null); view.release() }
     }
     AndroidView(factory = { view }, modifier = Modifier.fillMaxSize()) { canvas ->
         canvas.onZoom = onZoom; canvas.onPlace = onPlace; canvas.onCount = onCount
         canvas.onTap = onTap; canvas.onError = onError
-        canvas.configure(zoom, pageTurn, spread)
+        canvas.configure(zoom, pageTurn, spread, crop, tapSide, tapZone)
     }
 }
