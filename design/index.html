@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Polka Reader — варианты интерфейса</title>
+  <link rel="stylesheet" href="gallery.css">
+  <script defer src="gallery.js"></script>
+</head>
+<body data-theme="binding">
+  <header class="studio">
+    <a class="studio-brand" href="#binding" aria-label="Polka Reader, вариант Переплёт"><i class="book-mark"></i> Polka Reader</a>
+    <nav class="selector" aria-label="Вариант дизайна">
+      <button data-set-theme="binding">Переплёт</button>
+      <button data-set-theme="ink">Чернила</button>
+      <button data-set-theme="night">Ночная полка</button>
+    </nav>
+  </header>
+  <main class="board">
+    <div class="board-head">
+      <div><h1 id="concept"></h1><p id="description"></p></div>
+      <nav class="mode" aria-label="Устройство">
+        <button data-mode="all">Обзор</button><button data-mode="phone">Телефон</button><button data-mode="tablet">Планшет</button>
+      </nav>
+    </div>
+    <div class="screens" data-mode="all">
+      <section class="demo phone-demo">
+        <h2><span data-icon="phone"></span>Главная <small>Телефон</small></h2>
+        <div class="frame-space"><div class="device phone" id="home"></div></div>
+      </section>
+      <section class="demo phone-demo">
+        <h2><span data-icon="book"></span>Чтение EPUB <small>Телефон</small></h2>
+        <div class="frame-space"><div class="device phone" id="reading"></div></div>
+      </section>
+      <section class="demo tablet-demo">
+        <h2><span data-icon="tablet"></span>Библиотека <small>Планшет</small></h2>
+        <div class="frame-space"><div class="device tablet" id="library"></div></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
