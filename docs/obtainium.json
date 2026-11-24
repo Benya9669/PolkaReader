@@ -1,0 +1,9 @@
+[
+  {
+    "id": "ru.polka.reader",
+    "url": "https://github.com/Benya9669/PolkaReader",
+    "author": "Benya9669",
+    "name": "Polka Reader",
+    "additionalSettings": "{\"apkFilterRegEx\":\"^Polka-Reader-[0-9]+[.][0-9]+[.][0-9]+[.]apk$\",\"includePrereleases\":false,\"includeDrafts\":false}"
+  }
+]

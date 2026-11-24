@@ -4,6 +4,8 @@ Android-приложение для домашнего книжного серв
 
 ## Скачать и обновить
 
+Для обновлений через Obtainium откройте ссылку на Android и подтвердите импорт. Obtainium будет отслеживать стабильные выпуски Polka Reader на GitHub. [Добавить в Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22ru.polka.reader%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FBenya9669%2FPolkaReader%22%2C%22author%22%3A%22Benya9669%22%2C%22name%22%3A%22Polka%20Reader%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22%5EPolka-Reader-%5B0-9%5D%2B%5B.%5D%5B0-9%5D%2B%5B.%5D%5B0-9%5D%2B%5B.%5Dapk%24%5C%22%2C%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22includeDrafts%5C%22%3Afalse%7D%22%7D) · [Как добавить вручную](docs/releases.md#установка-через-obtainium).
+
 На телефоне или планшете скачайте универсальный `Polka-Reader-X.Y.Z.apk` из раздела **Assets** и откройте его. Для обновления установленной релизной версии выберите **Обновить**. При совпадающем ключе подписи Android сохраняет скачанные книги, сеанс и места чтения. [Скачать APK](https://github.com/Benya9669/PolkaReader/releases/latest).
 
 Файл `.apk.sha256` рядом с APK позволяет проверить скачивание. Для владельца описаны формат `VERSION`, резервная копия ключа, четыре секрета GitHub Actions и повторная публикация. [Проверка подписи и выпуск новой версии](docs/releases.md).
