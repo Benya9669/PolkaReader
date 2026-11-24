@@ -17,6 +17,13 @@ internal class ReadingCache(
     private val gate = Mutex()
     private val readers = mutableMapOf<File, Int>()
 
+    fun contains(scope: String, file: BookFile): Boolean {
+        require(scope.matches(Regex("[a-f0-9]{64}")) && file.readable && file.id > 0)
+        require(file.sha256.matches(Regex("[A-Fa-f0-9]{64}")))
+        val existing = File(File(root, scope), "${file.id}-${file.sha256}.${file.format}")
+        return existing.isFile && existing.length() == file.size
+    }
+
     suspend fun <T> withFile(
         scope: String, file: BookFile, fetch: suspend (File) -> Unit, read: suspend (File) -> T,
     ): T {
