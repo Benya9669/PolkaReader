@@ -7,6 +7,8 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 import ru.polka.reader.sync.ProgressDao
 import ru.polka.reader.sync.ProgressRow
@@ -59,8 +61,19 @@ interface LibraryDao {
     suspend fun remove(scope: String, id: Long)
 }
 
-@Database(entities = [CatalogEntry::class, Download::class, ProgressRow::class], version = 1, exportSchema = false)
+internal val addReaderNotes = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS reader_notes (
+            scope TEXT NOT NULL, fileId INTEGER NOT NULL, `key` TEXT NOT NULL, serverId INTEGER,
+            locator TEXT NOT NULL, quote TEXT NOT NULL, note TEXT NOT NULL, createNote TEXT NOT NULL,
+            pending INTEGER NOT NULL, removed INTEGER NOT NULL, revision INTEGER NOT NULL, touched INTEGER NOT NULL,
+            error TEXT, PRIMARY KEY(scope, fileId, `key`))""")
+    }
+}
+
+@Database(entities = [CatalogEntry::class, Download::class, ProgressRow::class, LocalNote::class], version = 2, exportSchema = false)
 abstract class ReaderDatabase : RoomDatabase() {
     abstract fun libraryDao(): LibraryDao
     abstract fun progressDao(): ProgressDao
+    abstract fun notesDao(): NotesDao
 }

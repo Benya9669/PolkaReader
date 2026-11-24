@@ -28,7 +28,8 @@ class PolkaData private constructor(private val context: Context) {
         }
     }
 
-    val db = Room.databaseBuilder(context, ReaderDatabase::class.java, "reader.db").build()
+    val db = Room.databaseBuilder(context, ReaderDatabase::class.java, "reader.db").addMigrations(addReaderNotes).build()
+    val notes by lazy { ReadingNotes(context, this) }
     private val dao = db.libraryDao()
     private val vault = SessionVault(context)
     private val transport = Transport()
@@ -201,6 +202,10 @@ class PolkaData private constructor(private val context: Context) {
     fun downloads(scope: String) = dao.downloads(scope)
     fun lastOpened(scope: String) = dao.lastOpened(scope)
     fun recentBook(scope: String) = dao.observeEntry(scope, "local:last-opened").map { it?.let(RecentBook::fromJson) }
+    fun recentBooks(scope: String) = dao.observeEntry(scope, "local:recent-books").map(::readHistory)
+
+    private fun readHistory(raw: String?): List<RecentBook> =
+        if (raw == null) emptyList() else JSONArray(raw).mapObjects { RecentBook.fromJson(it.toString()) }
 
     suspend fun markOpened(scope: String, fileId: Long) {
         account(scope)
@@ -212,7 +217,15 @@ class PolkaData private constructor(private val context: Context) {
         val stamp = System.currentTimeMillis()
         db.withTransaction {
             dao.markOpened(copy.scope, copy.fileId, stamp)
-            dao.cache(CatalogEntry(copy.scope, "local:last-opened", copy.recent(stamp).json()))
+            val currentBook = copy.recent(stamp)
+            val previous = dao.cached(copy.scope, "local:last-opened")?.let(RecentBook::fromJson)
+            val history = (listOf(currentBook) + listOfNotNull(previous) +
+                readHistory(dao.cached(copy.scope, "local:recent-books")))
+                .distinctBy { it.workId }.take(12)
+            val json = JSONArray()
+            history.forEach { json.put(JSONObject(it.json())) }
+            dao.cache(CatalogEntry(copy.scope, "local:recent-books", json.toString()))
+            dao.cache(CatalogEntry(copy.scope, "local:last-opened", currentBook.json()))
         }
     }
 

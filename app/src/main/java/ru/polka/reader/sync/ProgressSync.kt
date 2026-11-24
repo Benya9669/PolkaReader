@@ -109,6 +109,7 @@ class ProgressSync private constructor(context: Context) {
     fun resume(scope: String) {
         jobs.launch {
             if (!authenticated(scope)) return@launch
+            data.notes.resume(scope)
             for (fileId in dao.pending(scope)) {
                 enqueue(scope, fileId, ExistingWorkPolicy.KEEP)
                 schedule(scope, fileId, 0)

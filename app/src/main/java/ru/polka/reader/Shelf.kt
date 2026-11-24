@@ -209,8 +209,9 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
         catch (e: Exception) { error = friendly(e) }
     }
     val recent by remember(account.scope) { data.recentBook(account.scope) }.collectAsState(initial = null)
-    val opened = (downloads.mapNotNull { copy -> copy.lastOpenedAt?.let { copy.recent(it) } } + listOfNotNull(recent))
-        .maxByOrNull { it.openedAt }
+    val history by remember(account.scope) { data.recentBooks(account.scope) }.collectAsState(initial = emptyList())
+    val openedHere = history + listOfNotNull(recent) + downloads.mapNotNull { copy -> copy.lastOpenedAt?.let { copy.recent(it) } }
+    val opened = openedHere.maxByOrNull { it.openedAt }
     val local = opened?.let { book -> rows.firstOrNull { it.fileId == book.fileId } }
     val latest = remote.maxByOrNull { timestamp(it.updated) }
     val localWins = opened != null && (latest == null || local?.dirty == true ||
@@ -264,7 +265,30 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
             Text("Здесь появится книга, которую вы читали последней.")
             Button(catalog) { Text("Открыть библиотеку") }
         }
-        val others = downloads.filter { it.fileId != id }.take(4)
+        val heroWork = if (localWins) opened?.workId else latest?.book?.id
+        val serverHistory = remote.mapNotNull { item ->
+            val edition = item.book.editions.find { ed -> ed.files.any { it.id == item.fileId } } ?: return@mapNotNull null
+            val file = edition.files.first { it.id == item.fileId }
+            RecentBook(file.id, item.book.id, edition.id, item.book.title, item.book.authors, file.format, timestamp(item.updated))
+        }
+        val otherBooks = (openedHere + serverHistory).sortedByDescending { it.openedAt }
+            .distinctBy { it.workId }.filter { it.workId != heroWork }.take(5)
+        if (otherBooks.isNotEmpty()) {
+            Text("Недавно читали", style = MaterialTheme.typography.titleLarge)
+            otherBooks.forEach { book ->
+                val remotePoint = remote.find { it.fileId == book.fileId }
+                val localPoint = rows.find { it.fileId == book.fileId }
+                val place = if (localPoint != null && (localPoint.dirty || localPoint.lastReadAt >= timestamp(remotePoint?.updated)))
+                    placeLabel(localPoint.point)
+                else remotePoint?.let { listOfNotNull(it.chapter, percent(it.percentage)).joinToString(" · ") }
+                ListItem(modifier = Modifier.widthIn(max = 940.dp).fillMaxWidth().clickable { read(book.fileId, book.workId) },
+                    leadingContent = { Cover(data, account.scope, book.editionId, book.title, Modifier.size(40.dp, 58.dp)) },
+                    headlineContent = { Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(listOfNotNull(book.authors.takeIf(String::isNotBlank), place).joinToString(" · ")) },
+                    trailingContent = { Icon(Icons.Outlined.ChevronRight, null) })
+            }
+        }
+        val others = downloads.filter { it.fileId != id && otherBooks.none { book -> book.workId == it.workId } }.take(4)
         if (others.isNotEmpty()) {
             Text("На устройстве", style = MaterialTheme.typography.titleLarge)
             others.forEach { other ->

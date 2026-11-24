@@ -116,12 +116,12 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     var marks by remember { mutableStateOf(false) }
     var bookmark by remember { mutableStateOf<ReaderPlace?>(null) }
     var selection by remember { mutableStateOf<BookSelection?>(null) }
-    var annotations by remember { mutableStateOf(emptyList<AnnotationEntry>()) }
+    val annotations by remember(scope, fileId) { data.notes.observe(scope, fileId) }.collectAsState(initial = emptyList())
     var message by remember { mutableStateOf<String?>(null) }
     val jumpTo: (String) -> Unit = { jump = ReaderJump(System.nanoTime(), locator = it, returnable = true) }
     LaunchedEffect(fileId, account.authenticated) {
         if (account.authenticated && copy.format == "epub") {
-            try { annotations = data.annotations(scope, fileId) } catch (e: CancellationException) { throw e }
+            try { data.notes.refresh(scope, fileId) } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Opening an offline copy does not depend on annotations. */ }
         }
     }
@@ -130,7 +130,7 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
             { coroutine.launch { appearance.save(it) } },
             { p -> sync.record(scope, fileId, ReadingPoint(p.locator, p.percentage, p.chapter), forceNext); forceNext = false },
             onExit, { bookmark = it }, { selection = it }, { marks = true },
-            annotations.filter { it.quote.isNotEmpty() }.map { it.locator }, status, jump,
+            annotations.filter { !it.removed && it.quote.isNotEmpty() }.map { it.locator }.distinct(), status, jump,
             onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } })
     }
     val row = local
@@ -168,12 +168,11 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     }
     selection?.let { range ->
         MarkEditor("Сохранить выделение", "", "Заметка", 10000, { selection = null }, range.text) { note ->
-            val item = data.addAnnotation(scope, fileId, range.cfiRange, range.text, note)
-            annotations = listOf(item) + annotations
-            selection = null; message = "Выделение сохранено на сервере"
+            data.notes.add(scope, fileId, range.cfiRange, range.text, note)
+            selection = null
         }
     }
-    if (marks) MarksDialog(data, scope, fileId, copy.format, { marks = false }, { marks = false; jumpTo(it) }, { annotations = it })
+    if (marks) MarksDialog(data, scope, fileId, copy.format, annotations, { marks = false }, { marks = false; jumpTo(it) })
     message?.let { AlertDialog(onDismissRequest = { message = null }, text = { Text(it) },
         confirmButton = { TextButton({ message = null }) { Text("Готово") } }) }
 }
@@ -194,22 +193,27 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     }, enabled = !busy) { Text("Сохранить") } }, dismissButton = { TextButton(close) { Text("Отмена") } })
 }
 
-@Composable private fun MarksDialog(data: PolkaData, scope: String, fileId: Long, format: String, close: () -> Unit,
-                                    jump: (String) -> Unit, updated: (List<AnnotationEntry>) -> Unit) {
+@Composable private fun MarksDialog(data: PolkaData, scope: String, fileId: Long, format: String, annotations: List<LocalNote>,
+                                    close: () -> Unit, jump: (String) -> Unit) {
     var bookmarks by remember { mutableStateOf(emptyList<Bookmark>()) }
-    var notes by remember { mutableStateOf(emptyList<AnnotationEntry>()) }
+    val notes = annotations.filter { !it.removed || it.error != null }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
-    var edit by remember { mutableStateOf<AnnotationEntry?>(null) }
+    var edit by remember { mutableStateOf<LocalNote?>(null) }
     val coroutine = rememberCoroutineScope()
     LaunchedEffect(refresh) {
         error = null; loading = true
         try {
             bookmarks = data.bookmarks(scope, fileId)
-            if (format == "epub") { notes = data.annotations(scope, fileId); updated(notes) }
         } catch (e: CancellationException) { throw e } catch (e: Exception) { error = friendly(e) }
         finally { loading = false }
+    }
+    LaunchedEffect(refresh, format) {
+        if (format == "epub") try { data.notes.refresh(scope, fileId) }
+        catch (e: CancellationException) { throw e } catch (e: Exception) {
+            error = "Показаны заметки на устройстве. " + friendly(e)
+        }
     }
     AlertDialog(onDismissRequest = close, title = { Text(if (format == "epub") "Закладки и заметки" else "Закладки") },
         text = { LazyColumn {
@@ -221,15 +225,23 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
                 TextButton({ coroutine.launch { try { data.deleteBookmark(scope, fileId, item.id); refresh++ }
                     catch (e: Exception) { error = friendly(e) } } }) { Text("Удалить") }
             } }
-            items(notes) { note -> Column {
+            items(notes, key = { it.key }) { note -> Column {
                 TextButton({ jump(note.locator) }) { Text(note.quote.take(120).ifBlank { "К позиции заметки" }) }
                 if (note.note.isNotEmpty()) Text(note.note)
-                Row { TextButton({ edit = note }) { Text("Изменить") }
-                    TextButton({ coroutine.launch { try { data.deleteAnnotation(scope, fileId, note.id); refresh++ }
-                        catch (e: Exception) { error = friendly(e) } } }) { Text("Удалить") } }
+                Text(note.error ?: if (note.pending) "На устройстве · ожидает отправки" else "Синхронизировано",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row {
+                    if (!note.removed) TextButton({ edit = note }) { Text("Изменить") }
+                    if (note.error != null) TextButton({ coroutine.launch {
+                        try { data.notes.change(note, remove = note.removed) }
+                        catch (e: CancellationException) { throw e } catch (e: Exception) { error = friendly(e) }
+                    } }) { Text("Повторить") }
+                    if (!note.removed) TextButton({ coroutine.launch { try { data.notes.change(note, remove = true) }
+                        catch (e: CancellationException) { throw e } catch (e: Exception) { error = friendly(e) } } }) { Text("Удалить") }
+                }
             } }
         } }, confirmButton = { TextButton(close) { Text("Закрыть") } })
     edit?.let { note -> MarkEditor("Изменить заметку", note.note, "Заметка", 10000, { edit = null }) {
-        data.updateAnnotation(scope, fileId, note.id, it); edit = null; refresh++
+        data.notes.change(note, it); edit = null
     } }
 }
