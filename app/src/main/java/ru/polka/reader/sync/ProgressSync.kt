@@ -159,7 +159,8 @@ class ProgressSync private constructor(context: Context) {
     internal suspend fun pendingDelay(scope: String, fileId: Long): Long {
         val row = dao.get(scope, fileId) ?: return 0
         if (!row.dirty || row.conflictVersion != null) return 0
-        return (row.lastReadAt + QUIET_MS - System.currentTimeMillis()).coerceIn(0, QUIET_MS)
+        val age = System.currentTimeMillis() - row.lastReadAt
+        return if (age in 0 until QUIET_MS) QUIET_MS - age else 0
     }
 
     internal enum class Upload { FINISHED, MORE, RETRY }

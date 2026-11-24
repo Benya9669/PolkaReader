@@ -167,6 +167,11 @@ class PolkaData private constructor(private val context: Context) {
 
     suspend fun book(scope: String, id: Long) = parseBook(JSONObject(cached(scope, "/books/$id").first))
 
+    suspend fun bookForFile(scope: String, fileId: Long): Book {
+        val info = request(scope, "GET", "/files/$fileId/info")
+        return book(scope, info.getLong("work_id"))
+    }
+
     suspend fun home(scope: String): List<ReadingBook> =
         JSONObject(cached(scope, "/reading/home").first).getJSONArray("reading").mapObjects { item ->
             val state = item.getJSONObject("state")

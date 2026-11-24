@@ -109,8 +109,28 @@ async function main() {
     assert.equal(end.persist,true);
     await web.evaluate(cfi => view.display(cfi),end.locator);
     assert.deepEqual(await visibleAnchor(web,end.locator), {id:newParagraph.id,visible:true});
+    const marked = await web.evaluate(() => {
+      const contents = view.getContents()[0], text = contents.document.getElementById('p24').firstChild;
+      const range = contents.document.createRange();
+      range.setStart(text, 6);
+      range.setEnd(text, 22);
+      return contents.cfiFromRange(range);
+    });
+    await send({type:'jump',locator:marked});
+    await waitPlace(4);
+    const point = await mobile.evaluate(() => events.filter(e => e.type === 'place').at(-1).locator);
+    assert(!point.includes(','));
+    assert.deepEqual(await visibleAnchor(mobile,point), {id:'p24',visible:true});
+    await send({type:'jump',percentage:.64});
+    await waitPlace(5);
+    const alternate = await mobile.evaluate(() => events.filter(e => e.type === 'place').at(-1));
+    assert.match(alternate.locator,/^epubcfi\(/);
+    assert.equal(alternate.persist,true);
+    await web.evaluate(cfi => view.display(cfi),alternate.locator);
+    assert((await visibleAnchor(web,alternate.locator)).visible);
     console.log('PASS web → Android reader HTML → font/width change → next → web');
     console.log(start.paragraph,start.cfi,'→',newParagraph.id,end.locator);
+    console.log('PASS annotation range → start point; alternate percentage → native CFI → web');
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

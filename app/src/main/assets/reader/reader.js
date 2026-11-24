@@ -1,7 +1,7 @@
 'use strict';
 (() => {
   const pane = document.getElementById('page');
-  let port, book, view, anchor, settings;
+  let port, book, view, anchor;
   let ready = false;
   let commands = Promise.resolve();
   let chapters = [];
@@ -96,7 +96,6 @@
   }
 
   function applyStyle(s) {
-    settings = s;
     const dark = s.theme === 'dark', sepia = s.theme === 'sepia';
     const background = dark ? '#202321' : sepia ? '#f3e9d3' : '#ffffff';
     document.body.style.backgroundColor = background;
@@ -126,6 +125,11 @@
       target = book.locations.cfiFromPercentage(Math.min(1, Math.max(0, action.percentage)));
     }
     if (!target) throw new Error('Missing EPUB target');
+    if (target.startsWith('epubcfi(')) {
+      // A selected annotation spans text. Reading progress uses its start point.
+      const cfi = new ePub.CFI(target);
+      if (cfi.range) { cfi.collapse(true); target = cfi.toString(); }
+    }
     await view.display(target);
     const place = await readLocation();
     if (target.startsWith('epubcfi(')) place.locator = target;
@@ -175,7 +179,7 @@
     await view.display(config.initial?.locator || undefined);
     const rendered = await readLocation();
     ready = true;
-    publish(config.initial?.locator ? config.initial : rendered, !config.initial?.locator);
+    publish(config.initial?.locator ? config.initial : rendered, false);
     highlights(config.highlights || []);
     let width = pane.clientWidth, height = pane.clientHeight;
     new ResizeObserver(() => {

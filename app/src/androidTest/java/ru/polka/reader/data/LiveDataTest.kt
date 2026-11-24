@@ -35,6 +35,7 @@ class LiveDataTest {
         assertTrue(byAuthor.items.any { it.id == pdfBook.id })
         val edition = data.book(one.scope, pdfBook.id).editions.first { e -> e.files.any { it.format == "pdf" } }
         val file = edition.files.first { it.format == "pdf" }
+        assertEquals(pdfBook.id, data.bookForFile(one.scope, file.id).id)
         if (edition.hasCover) assertTrue(data.cover(one.scope, edition.id)!!.length() > 0)
         data.remove(one.scope, file.id)
         val damaged = file.copy(sha256 = "0".repeat(64))

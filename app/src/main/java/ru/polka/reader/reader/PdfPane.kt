@@ -3,7 +3,9 @@ package ru.polka.reader.reader
 import android.content.Context
 import android.graphics.*
 import android.graphics.pdf.PdfRenderer
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -22,9 +24,9 @@ import kotlin.math.*
 
 private class PdfCanvas(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    var bitmap: Bitmap? = null
-    var pageNumber = 0
-    var zoom = 1f
+    private val destination = RectF()
+    private var page: PageImage? = null
+    private var zoom = 1f
     var onTap: () -> Unit = {}
     var onZoom: (Float) -> Unit = {}
     var turn: (Boolean) -> Unit = {}
@@ -33,10 +35,10 @@ private class PdfCanvas(context: Context) : View(context) {
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             zoom = (zoom * detector.scaleFactor).coerceIn(.65f, 3f)
-            onZoom(zoom)
             invalidate()
             return true
         }
+        override fun onScaleEnd(detector: ScaleGestureDetector) { onZoom(zoom) }
     })
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(event: MotionEvent) = true
@@ -58,10 +60,18 @@ private class PdfCanvas(context: Context) : View(context) {
         gestures.onTouchEvent(event)
         return true
     }
-    fun resetPan() { panX = 0f; panY = 0f }
+    fun display(value: PageImage?, requestedZoom: Float) {
+        val zoomChanged = !scale.isInProgress && zoom != requestedZoom
+        if (page === value && !zoomChanged) return
+        if (page?.number != value?.number) { panX = 0f; panY = 0f }
+        if (page !== value) contentDescription = value?.description
+        page = value
+        if (zoomChanged) zoom = requestedZoom
+        invalidate()
+    }
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.rgb(64,65,64))
-        val image = bitmap ?: return
+        val image = page?.bitmap ?: return
         val factor = min(width.toFloat() / image.width, height.toFloat() / image.height) * zoom
         val w = image.width * factor
         val h = image.height * factor
@@ -71,11 +81,35 @@ private class PdfCanvas(context: Context) : View(context) {
         panY = panY.coerceIn(-maxY, maxY)
         val left = (width - w) / 2 + panX
         val top = (height - h) / 2 + panY
-        canvas.drawBitmap(image, null, RectF(left, top, left + w, top + h), paint)
+        destination.set(left, top, left + w, top + h)
+        canvas.drawBitmap(image, null, destination, paint)
     }
 }
 
-private data class PageImage(val number: Int, val count: Int, val bitmap: Bitmap)
+private data class PageImage(val number: Int, val count: Int, val bitmap: Bitmap, val description: String)
+
+private fun pageDescription(page: PdfRenderer.Page, number: Int, count: Int): String = buildString {
+    append("Страница $number из $count. Нажмите, чтобы показать или скрыть панели.")
+    if (Build.VERSION.SDK_INT >= 35) {
+        // Keep accessibility events small even for PDFs with exceptionally large text layers.
+        val limit = 16_000
+        try {
+            for (part in page.textContents) {
+                if (part.text.isBlank()) continue
+                append('\n')
+                val room = limit - length
+                if (part.text.length >= room) {
+                    append(part.text, 0, room.coerceAtLeast(0))
+                    append('…')
+                    break
+                }
+                append(part.text)
+            }
+        } catch (_: RuntimeException) {
+            Log.w("PolkaPDF", "Could not extract the PDF text layer for accessibility")
+        }
+    }
+}
 
 private fun renderPage(file: File, number: Int, width: Int): PageImage =
     ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).let { descriptor ->
@@ -91,7 +125,7 @@ private fun renderPage(file: File, number: Int, width: Int): PageImage =
                     maxOf(1, (factor * page.height).roundToInt()), Bitmap.Config.ARGB_8888)
                 bitmap.eraseColor(Color.WHITE)
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                PageImage(number, document.pageCount, bitmap)
+                PageImage(number, document.pageCount, bitmap, pageDescription(page, number, document.pageCount))
             }
         }
     }
@@ -104,7 +138,7 @@ internal fun PdfPane(
 ) {
     var number by remember { mutableIntStateOf(initial?.locator?.toIntOrNull() ?: 1) }
     var image by remember { mutableStateOf<PageImage?>(null) }
-    var persist by remember { mutableStateOf(initial == null) }
+    var persist by remember { mutableStateOf(false) }
     val currentPlace by rememberUpdatedState(onPlace)
     val currentCount by rememberUpdatedState(onCount)
     val currentError by rememberUpdatedState(onError)
@@ -138,16 +172,10 @@ internal fun PdfPane(
             catch (_: Exception) { currentError("Не удалось открыть эту страницу PDF. Проверьте локальную копию и номер страницы.") }
         }
         AndroidView(factory = { PdfCanvas(it) }, modifier = Modifier.fillMaxSize()) { canvas ->
-            val page = image
-            if (page != null && canvas.pageNumber != page.number) canvas.resetPan()
-            canvas.pageNumber = page?.number ?: 0
-            canvas.bitmap = page?.bitmap
-            canvas.zoom = zoom
+            canvas.display(image, zoom)
             canvas.onZoom = onZoom
             canvas.onTap = onTap
             canvas.turn = { next -> navigate(ReaderAction(if (next) "next" else "previous")) }
-            canvas.contentDescription = page?.let { "Страница ${it.number} из ${it.count}. Нажмите, чтобы показать или скрыть панели." }
-            canvas.invalidate()
         }
     }
 }

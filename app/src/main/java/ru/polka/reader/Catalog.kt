@@ -18,6 +18,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.polka.reader.data.*
 import ru.polka.reader.sync.ProgressRow
+import ru.polka.reader.sync.ProgressSync
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 internal fun Catalog(data: PolkaData, scope: String, libraries: List<Library>, refresh: Int, select: (Long) -> Unit) {
@@ -91,6 +93,11 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
     var job by rememberSaveable { mutableStateOf<Long?>(null) }
     var jobStatus by rememberSaveable { mutableStateOf("") }
     var starting by remember { mutableStateOf(false) }
+    val sync = ProgressSync.get(LocalContext.current)
+    LaunchedEffect(book?.id, refresh) {
+        // Use the server's per-file position without marking a catalog visit as reading.
+        book?.editions?.flatMap { it.files }?.filter { it.readable }?.forEach { sync.preload(scope, it.id) }
+    }
     LaunchedEffect(id, refresh, retry) {
         error = null
         try { book = data.book(scope, id) }
@@ -111,10 +118,11 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
                 }
                 val target = result.fileId
                 if (target != null) {
-                    val updated = data.book(scope, id)
+                    // Conversion can return an existing, identical file from another work in the library.
+                    val updated = data.bookForFile(scope, target)
                     val edition = updated.editions.firstOrNull { ed -> ed.files.any { it.id == target && it.readable } }
                         ?: error("Сервер пока не вернул файл после конвертации")
-                    book = updated
+                    if (updated.id == id) book = updated
                     job = null
                     downloadAndRead(updated, edition, edition.files.first { it.id == target })
                     break
