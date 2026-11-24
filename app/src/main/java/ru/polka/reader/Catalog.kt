@@ -1,5 +1,6 @@
 package ru.polka.reader
 
+import android.text.Html
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +21,8 @@ import ru.polka.reader.data.*
 import ru.polka.reader.sync.ProgressRow
 import ru.polka.reader.sync.ProgressSync
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.ContentScale
 
 @Composable
 internal fun Catalog(data: PolkaData, scope: String, libraries: List<Library>, refresh: Int, select: (Long) -> Unit) {
@@ -84,8 +87,7 @@ internal fun Catalog(data: PolkaData, scope: String, libraries: List<Library>, r
 @Composable
 internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: List<Library>, downloads: List<Download>,
                         positions: List<ProgressRow>, transfers: Map<Long, Transfer>, refresh: Int,
-                        download: (Book, Edition, BookFile) -> Unit, cancel: (Long) -> Unit, read: (Long) -> Unit,
-                        downloadAndRead: (Book, Edition, BookFile) -> Unit) {
+                        download: (Book, Edition, BookFile) -> Unit, cancel: (Long) -> Unit, read: (Long, Long?) -> Unit) {
     val coroutine = rememberCoroutineScope()
     var book by remember { mutableStateOf<Book?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -93,6 +95,7 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
     var job by rememberSaveable { mutableStateOf<Long?>(null) }
     var jobStatus by rememberSaveable { mutableStateOf("") }
     var starting by remember { mutableStateOf(false) }
+    var editionId by rememberSaveable(id) { mutableStateOf<Long?>(null) }
     val sync = ProgressSync.get(LocalContext.current)
     LaunchedEffect(book?.id, refresh) {
         // Use the server's per-file position without marking a catalog visit as reading.
@@ -124,7 +127,7 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
                         ?: error("Сервер пока не вернул файл после конвертации")
                     if (updated.id == id) book = updated
                     job = null
-                    downloadAndRead(updated, edition, edition.files.first { it.id == target })
+                    read(edition.files.first { it.id == target }.id, updated.id)
                     break
                 }
                 if (result.status in setOf("error", "failed", "done", "completed")) { job = null; break }
@@ -139,13 +142,61 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
             if (error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
             return@Column
         }
-        Text(selected.title, style = MaterialTheme.typography.headlineMedium, fontFamily = FontFamily.Serif)
-        Text(selected.authors, style = MaterialTheme.typography.titleMedium)
+        val edition = selected.editions.find { it.id == editionId } ?: selected.editions.firstOrNull()
+        val heading: @Composable () -> Unit = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(selected.title, style = MaterialTheme.typography.headlineMedium, fontFamily = FontFamily.Serif)
+                Text(selected.authors.ifBlank { "Автор не указан" }, style = MaterialTheme.typography.titleMedium)
+                edition?.let { Text(it.label, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val width = maxWidth
+            val cover: @Composable () -> Unit = {
+                val coverWidth = if (width >= 480.dp) 156.dp else 120.dp
+                Cover(data, scope, edition?.takeIf { it.hasCover }?.id, selected.title,
+                    Modifier.width(coverWidth).height(coverWidth * 1.44f), ContentScale.Fit)
+            }
+            if (width < 300.dp || LocalDensity.current.fontScale > 1.5f) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { cover(); heading() }
+            } else Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                cover()
+                Box(Modifier.weight(1f)) { heading() }
+            }
+        }
+        if (selected.editions.size > 1) {
+            var menu by remember { mutableStateOf(false) }
+            Box {
+                OutlinedButton({ menu = true }) { Text("Выбрать издание · ${selected.editions.size}") }
+                DropdownMenu(menu, { menu = false }) {
+                    selected.editions.forEachIndexed { index, item ->
+                        DropdownMenuItem(text = { Text("${index + 1}. ${item.label}") }, onClick = {
+                            editionId = item.id
+                            menu = false
+                        })
+                    }
+                }
+            }
+        }
+        val summary = remember(edition?.summary) {
+            val value = edition?.summary.orEmpty()
+            if (Regex("""</?(?:p|br|div|span|em|strong|b|i|ul|li)(?:\s[^>]*)?\s*/?>""", RegexOption.IGNORE_CASE).containsMatchIn(value)) {
+                Html.fromHtml(value, Html.FROM_HTML_MODE_COMPACT).toString().trim()
+            } else value
+        }
+        var expanded by rememberSaveable(edition?.id, summary) { mutableStateOf(false) }
+        var canExpand by remember(edition?.id, summary) { mutableStateOf(false) }
+        Text("Аннотация", style = MaterialTheme.typography.titleMedium)
+        Text(summary.ifBlank { "Описание пока не добавлено." }, style = MaterialTheme.typography.bodyLarge,
+            maxLines = if (expanded) Int.MAX_VALUE else 4, overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) canExpand = it.hasVisualOverflow })
+        if (expanded || canExpand) {
+            TextButton({ expanded = !expanded }) { Text(if (expanded) "Свернуть" else "Читать полностью") }
+        }
+        HorizontalDivider()
         if (jobStatus.isNotBlank()) Text(jobStatus)
-        selected.editions.forEach { edition ->
-            HorizontalDivider()
-            Text(edition.label, style = MaterialTheme.typography.titleMedium)
-            if (edition.summary.isNotBlank()) Text(edition.summary, maxLines = 8, overflow = TextOverflow.Ellipsis)
+        if (edition != null) {
             edition.files.forEach { file ->
                 key(file.id) {
                     val copy = downloads.find { it.fileId == file.id }
@@ -158,21 +209,25 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
                             Text("${file.format.uppercase()} · №${file.id} · ${sizeLabel(file.size)}", style = MaterialTheme.typography.bodySmall)
                             file.derivedFrom?.let { Text("Читаемая копия файла №$it") }
                             if (position != null) Text("Место чтения · ${placeLabel(position.point)}")
-                            if (copy != null) {
-                                Text("Доступна офлайн")
-                                Button({ read(file.id) }) { Text("Читать") }
-                            } else if (transfer != null && transfer.error == null) {
-                                LinearProgressIndicator(progress = { (transfer.bytes.toDouble() / transfer.total.coerceAtLeast(1)).toFloat() })
-                                Text("${sizeLabel(transfer.bytes)} из ${sizeLabel(transfer.total)}")
-                                TextButton({ cancel(file.id) }) { Text("Отменить") }
-                            } else if (file.readable) {
+                            if (file.readable) {
+                                if (copy != null) Text("Доступна офлайн")
                                 transfer?.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                                Button({ download(selected, edition, file) }) { Text(if (transfer?.error != null) "Повторить загрузку" else "Скачать") }
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Button({ read(file.id, selected.id) }) { Text("Читать") }
+                                    if (copy == null && (transfer == null || transfer.error != null)) {
+                                        OutlinedButton({ download(selected, edition, file) }) {
+                                            Text(if (transfer?.error != null) "Повторить загрузку" else "Скачать")
+                                        }
+                                    }
+                                }
+                                if (copy == null && transfer != null && transfer.error == null) {
+                                    LinearProgressIndicator(progress = { (transfer.bytes.toDouble() / transfer.total.coerceAtLeast(1)).toFloat() })
+                                    Text("${sizeLabel(transfer.bytes)} из ${sizeLabel(transfer.total)}")
+                                    TextButton({ cancel(file.id) }) { Text("Отменить") }
+                                }
                             } else if (derived != null) {
-                                TextButton({
-                                    if (downloads.any { it.fileId == derived.id }) read(derived.id)
-                                    else downloadAndRead(selected, edition, derived)
-                                }) { Text("Открыть копию ${derived.format.uppercase()} №${derived.id}") }
+                                Button({ read(derived.id, selected.id) }) { Text("Открыть копию ${derived.format.uppercase()} №${derived.id}") }
                             } else if (file.conversionTarget != null && libraries.any { it.id == selected.libraryId && it.canConvert }) {
                                 OutlinedButton(onClick = {
                                     starting = true
@@ -187,6 +242,7 @@ internal fun BookDetail(data: PolkaData, scope: String, id: Long, libraries: Lis
                     }
                 }
             }
-        }
+            if (edition.files.isEmpty()) Text("Для этого издания пока нет файлов.")
+        } else Text("Для этого произведения пока нет изданий.")
     }
 }

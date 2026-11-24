@@ -1,5 +1,6 @@
 // Usage: node tools/reader/cfi-probe.cjs <Polka v0.3.0 frontend directory with npm ci>
 // Optional BROWSER_PATH selects a local Chromium executable.
+// Optional POLKA_READER_PREVIEW_DIR saves real mid-gesture slide and curl PNGs.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -11,15 +12,17 @@ const fromWeb = createRequire(path.join(frontend, 'package.json'));
 const {chromium} = fromWeb('playwright');
 const JSZip = fromWeb('jszip');
 const esc = str => str.replaceAll('&', '&amp;').replaceAll('<', '&lt;');
-async function sampleBook() {
+async function sampleBook(rtl = false) {
   const zip = new JSZip();
   zip.file('mimetype', 'application/epub+zip');
   zip.file('META-INF/container.xml', '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
-  zip.file('book.opf', '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">polka-test</dc:identifier><dc:title>Проверка CFI</dc:title><dc:language>ru</dc:language></metadata><manifest><item id="toc" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/><item id="text" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="text"/></spine></package>');
+  zip.file('book.opf', '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">polka-test</dc:identifier><dc:title>Проверка CFI</dc:title><dc:language>ru</dc:language></metadata><manifest><item id="toc" href="nav.xhtml" properties="nav" media-type="application/xhtml+xml"/><item id="text" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/></manifest><spine page-progression-direction="' + (rtl?'rtl':'ltr') + '"><itemref idref="text"/><itemref idref="notes"/></spine></package>');
   zip.file('nav.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Оглавление</title></head><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml">Глава</a></li></ol></nav></body></html>');
   const paragraphs = Array.from({length: 90}, (_, i) => '<p id="p' + i + '">Абзац ' + i + '. ' +
     esc('Тихий ветер шевелил страницы раскрытой книги. '.repeat(5)) + '</p>').join('');
-  zip.file('chapter.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Глава</title></head><body>' + paragraphs + '</body></html>');
+  zip.file('chapter.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Глава</title></head><body style="font-family:Georgia,serif">' + paragraphs +
+    '<p><a id="ref" href="notes.xhtml#f1" epub:type="noteref">Сноска</a> · <a id="seealso" href="notes.xhtml#more">См. также</a></p></body></html>');
+  zip.file('notes.xhtml','<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Примечания</title></head><body><aside epub:type="footnote" id="f1"><p>Полярная звезда указывает на север. <a role="doc-backlink" href="chapter.xhtml#ref">Назад</a></p></aside><p id="more">Дополнительный материал</p></body></html>');
   return zip.generateAsync({type: 'nodebuffer'});
 }
 
@@ -59,7 +62,7 @@ async function main() {
       const range = view.getRange(loc.start.cfi);
       return {cfi:loc.start.cfi, paragraph:range.startContainer.parentElement.closest('p').id};
     });
-    const mobile = await browser.newPage({viewport:{width:360,height:520}});
+    const mobile = await browser.newPage({viewport:{width:360,height:520},hasTouch:true});
     await mobile.goto(origin + '/index.html');
     await mobile.evaluate(() => {
       // Simulate the zero-height root reported by an Android WebView embedded
@@ -91,8 +94,13 @@ async function main() {
     assert.deepEqual(await visibleAnchor(mobile,start.cfi), {id:start.paragraph,visible:true});
     assert.equal(await mobile.evaluate(() => document.getElementById('page').clientHeight),520);
     assert.equal(await mobile.evaluate(() => events.find(e => e.type === 'place').persist), false);
-    await send({type:'style',settings:{...settings,fontPercent:145}});
-    await mobile.waitForFunction(() => document.querySelector('iframe')?.contentDocument.body.style.fontSize === '145%');
+    await send({type:'style',settings:{...settings,fontPercent:145,fontFamily:'serif'}});
+    await mobile.waitForFunction(() => {
+      const style = document.querySelector('iframe')?.contentDocument.body.style;
+      return style?.fontSize === '145%' && style.fontFamily === 'serif';
+    });
+    await send({type:'style',settings:{...settings,fontPercent:145,fontFamily:'book'}});
+    await mobile.waitForFunction(() => document.querySelector('iframe')?.contentDocument.body.style.fontFamily.includes('Georgia'));
     await mobile.setViewportSize({width:490,height:390});
     await mobile.waitForFunction(() => document.querySelector('.epub-container')?.clientWidth === document.getElementById('page').clientWidth);
     await mobile.waitForFunction(target => {
@@ -136,6 +144,238 @@ async function main() {
     console.log('PASS web → Android reader HTML → font/width change → next → web');
     console.log(start.paragraph,start.cfi,'→',newParagraph.id,end.locator);
     console.log('PASS annotation range → start point; alternate percentage → native CFI → web');
+    const places = () => mobile.evaluate(() => events.filter(e => e.type === 'place').length);
+    const captureDir = process.env.POLKA_READER_PREVIEW_DIR;
+    if (captureDir) fs.mkdirSync(captureDir,{recursive:true});
+    const cdp = await mobile.context().newCDPSession(mobile);
+    const touch = (type,x,y) => cdp.send('Input.dispatchTouchEvent',{
+      type,touchPoints:x === undefined ? [] : [{x,y,id:1}]});
+    async function touchMove(x,y,dx,dy) {
+      await touch('touchStart',x,y);
+      for (let i = 1; i <= 5; ++i) await touch('touchMove',x+dx*i/5,y+dy*i/5);
+    }
+    const idle = () => mobile.waitForFunction(() => !document.querySelector('#book-turn').dataset.effect);
+    const waitFrame = effect => mobile.waitForFunction(name => {
+      const stage = document.querySelector('#book-turn');
+      return stage.dataset.effect === name && Number(stage.dataset.progress) > .025;
+    },effect,{timeout:4000});
+    async function styling(effect,double=false) {
+      await send({type:'style',spread:double,settings:{...settings,pageTurn:effect}});
+      // A following non-persistent jump provides a deterministic queue barrier.
+      const n = await places();
+      await send({type:'jump',locator:start.cfi,persist:false});
+      await waitPlace(n+1);
+    }
+    for (const effect of ['slide','curl']) {
+      await styling(effect);
+      const n = await places();
+      await touchMove(375,270,-165,-12);
+      await waitFrame(effect);
+      const geometry = await mobile.evaluate(() => {
+        const stage = document.querySelector('#book-turn'), under = document.querySelector('#preview');
+        return {progress:Number(stage.dataset.progress),inside:under.inert && under.getAttribute('aria-hidden') === 'true',
+          adjacent:Boolean(under.querySelector('iframe')?.contentDocument.querySelector('p')),
+          under:getComputedStyle(under).transform, paper:getComputedStyle(document.querySelector('#page')).transform,
+          crease:getComputedStyle(document.querySelector('#back')).clipPath};
+      });
+      assert(geometry.progress > .25 && geometry.progress < .6 && geometry.adjacent && geometry.inside);
+      if (effect === 'slide') { assert.match(geometry.under,/matrix/); assert.match(geometry.paper,/matrix/); }
+      else assert.match(geometry.crease,/^polygon\(/);
+      if (captureDir) await mobile.screenshot({path:path.join(captureDir,'epub-'+effect+'.png')});
+      assert.equal(await places(),n);
+      await touch('touchEnd');
+      await waitPlace(n+1);
+      await idle();
+      const last = await mobile.evaluate(() => events.filter(e => e.type === 'place').at(-1));
+      assert(last.persist && last.locator !== start.cfi);
+      await web.evaluate(cfi => view.display(cfi),last.locator);
+      assert((await visibleAnchor(web,last.locator)).visible);
+
+      await touchMove(230,250,35,2); await waitFrame(effect);
+      await mobile.waitForTimeout(160); // Slow short drag must snap back.
+      await touch('touchEnd'); await idle();
+      await touchMove(210,155,2,72); await touch('touchEnd');
+      await mobile.waitForTimeout(300);
+      assert.equal(await places(),n+1);
+      await touchMove(200,225,135,0); await waitFrame(effect); await touch('touchCancel'); await idle();
+      assert.equal(await places(),n+1);
+      await send({type:'previous'}); await waitPlace(n+2);
+      console.log('PASS '+effect+' follows a real touch, exposes adjacent page, commits once, cancels short/vertical/interrupted gestures and works by button');
+    }
+    await styling('none');
+    const n = await places();
+    await mobile.touchscreen.tap(240,185);
+    await mobile.waitForFunction(() => events.some(e => e.type === 'tap'));
+    await mobile.touchscreen.tap(435,185);
+    await waitPlace(n+1);
+    assert.equal(await mobile.locator('#book-turn[data-effect]').count(),0);
+    await mobile.touchscreen.tap(52,185); await waitPlace(n+2);
+    const beforeNote = await mobile.evaluate(() => events.filter(e => e.type === 'place').at(-1));
+    async function clickBookLink(id) {
+      await mobile.evaluate(id => document.querySelector('#page iframe').contentDocument.getElementById(id).click(),id);
+    }
+    await clickBookLink('ref');
+    await mobile.waitForFunction(() => events.some(e => e.type === 'footnote'));
+    const note = await mobile.evaluate(() => events.find(e => e.type === 'footnote'));
+    assert.equal(note.text,'Полярная звезда указывает на север.');
+    assert.equal(await places(),n+2);
+    await send({type:'link',locator:note.target}); await waitPlace(n+3);
+    assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'linkOrigin').at(-1).locator),beforeNote.locator);
+    await send({type:'jump',locator:beforeNote.locator}); await waitPlace(n+4);
+    await clickBookLink('seealso'); await waitPlace(n+5);
+    assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'linkOrigin').at(-1).locator),beforeNote.locator);
+
+    const writes = () => mobile.evaluate(() => events.filter(e => e.type === 'place' && e.persist).length);
+    const oldWrites = await writes();
+    await mobile.setViewportSize({width:1160,height:540});
+    await styling('none',true);
+    const columnCount = () => mobile.evaluate(() => {
+      const doc = document.querySelector('#page iframe').contentDocument;
+      const columnWidth = parseFloat(doc.defaultView.getComputedStyle(doc.documentElement).columnWidth) ||
+        parseFloat(doc.defaultView.getComputedStyle(doc.body).columnWidth);
+      return document.querySelector('#page').clientWidth / columnWidth;
+    });
+    assert((await columnCount()) > 1.8, 'Landscape must show two actual columns');
+    assert((await visibleAnchor(mobile,start.cfi)).visible);
+
+    // Measure both real columns and their text at the top of each spread.
+    // A one-column turn would repeat half the previous spread.
+    function spreadContent() {
+      const stage = document.querySelector('#page'), container = stage.querySelector('.epub-container');
+      const iframe = stage.querySelector('iframe'), doc = iframe.contentDocument;
+      const outer = iframe.getBoundingClientRect(), bounds = stage.getBoundingClientRect();
+      const firstText = [0,.5].map(left => {
+        for (const p of doc.querySelectorAll('p[id]')) {
+          const range = doc.createRange();
+          range.selectNodeContents(p);
+          for (const rect of range.getClientRects()) {
+            const x = rect.left + outer.left - bounds.left;
+            if (x >= bounds.width*left && x < bounds.width*(left+.5) && rect.top >= 0 && rect.top < bounds.height) {
+              const point = doc.caretRangeFromPoint(rect.left+1,rect.top+1);
+              if (point) return [p.id,point.startOffset];
+            }
+          }
+        }
+        return null;
+      });
+      return {width:bounds.width,offset:container.scrollLeft,firstText};
+    }
+    const spreadBefore = await mobile.evaluate(spreadContent);
+    assert(spreadBefore.firstText.every(Boolean));
+    assert.notDeepEqual(...spreadBefore.firstText);
+    const nSpread = await places();
+    await send({type:'next'}); await waitPlace(nSpread+1);
+    const spreadAfter = await mobile.evaluate(spreadContent);
+    assert(spreadAfter.firstText.every(Boolean));
+    assert.notDeepEqual(spreadBefore.firstText[1],spreadAfter.firstText[0]);
+    assert.equal(spreadAfter.offset - spreadBefore.offset,spreadBefore.width);
+    await send({type:'previous'}); await waitPlace(nSpread+2);
+    assert.deepEqual((await mobile.evaluate(spreadContent)).firstText,spreadBefore.firstText);
+
+    // Delay only the decorative second rendition, as for a slow image-heavy
+    // chapter. Rotate after finger release while its neighbour is still pending.
+    await styling('curl',true);
+    await mobile.evaluate(() => {
+      const original = ePub.Rendition.prototype.next;
+      ePub.Rendition.prototype.next = async function(...args) {
+        if (this.manager.container.closest('#preview') && window.holdPreview) {
+          window.previewWaiting = true;
+          await new Promise(resolve => { window.resumePreview = resolve; });
+        }
+        return original.apply(this,args);
+      };
+      window.holdPreview = true;
+    });
+    const nRotate = await places();
+    await touchMove(800,300,-435,-15);
+    await mobile.waitForFunction(() => window.previewWaiting);
+    await touch('touchEnd');
+    await mobile.setViewportSize({width:600,height:540});
+    await send({type:'style',spread:false,settings:{...settings,pageTurn:'curl'}});
+    await mobile.waitForFunction(() => document.querySelector('#book-turn').dataset.spread === 'false');
+    await mobile.evaluate(() => { window.holdPreview = false; window.resumePreview(); });
+    await idle();
+    await mobile.waitForTimeout(300);
+    assert.equal(await places(),nRotate);
+    assert((await visibleAnchor(mobile,start.cfi)).visible);
+    // Resize a fully painted fold while the user's finger is still down.
+    await touchMove(435,265,-205,-5); await waitFrame('curl');
+    await mobile.setViewportSize({width:565,height:440}); await touch('touchEnd');
+    await idle(); await mobile.waitForTimeout(240);
+    assert.equal(await places(),nRotate);
+    assert((await visibleAnchor(mobile,start.cfi)).visible);
+
+    await send({type:'style',spread:false,settings:{...settings,pageTurn:'none'}});
+    await mobile.waitForFunction(() => document.querySelector('#book-turn').dataset.spread === 'false');
+    await mobile.waitForFunction(() => document.querySelector('#page').clientWidth <= 760);
+    await mobile.waitForTimeout(150);
+    assert((await columnCount()) < 1.5);
+    assert.equal(await writes(),oldWrites+2);
+    assert((await visibleAnchor(mobile,start.cfi)).visible);
+    assert.deepEqual(await mobile.evaluate(() => events.filter(e => e.type === 'error')),[]);
+    console.log('PASS edge and centre taps, plain text cross-chapter footnote, internal navigation return CFI, true spread and single-page reflow');
+
+    const selectCount = await places();
+    await mobile.evaluate(locator => {
+      const doc = document.querySelector('#page iframe').contentDocument;
+      const range = new ePub.CFI(locator).toRange(doc);
+      range.selectNodeContents(range.startContainer.parentElement.closest('p'));
+      const selection = doc.defaultView.getSelection();
+      selection.removeAllRanges(); selection.addRange(range);
+    },start.cfi);
+    // A selection owns the gesture, including when TalkBack clicks an edge.
+    await mobile.evaluate(() => {
+      const doc = document.querySelector('#page iframe').contentDocument;
+      doc.body.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:8}));
+    });
+    await mobile.waitForTimeout(150);
+    assert.equal(await places(),selectCount);
+    assert(await mobile.evaluate(() => !document.querySelector('#page iframe').contentWindow.getSelection().isCollapsed));
+
+    const closingEvents = [];
+    await mobile.exposeFunction('reportClosingPlace',message => closingEvents.push(message));
+    await mobile.evaluate(() => {
+      document.querySelector('#page iframe').contentWindow.getSelection().removeAllRanges();
+      port.addEventListener('message', event => {
+        const value = JSON.parse(event.data);
+        if (value.type === 'place' && value.persist) window.reportClosingPlace(value);
+      });
+      window.previewWaiting = false; window.holdPreview = true;
+    });
+    await styling('curl');
+    await touchMove(440,255,-230,0);
+    await mobile.waitForFunction(() => window.previewWaiting);
+    await touch('touchEnd');
+    // The document is disposed while the released turn is still preparing.
+    await mobile.goto('about:blank');
+    assert.deepEqual(closingEvents,[]);
+    console.log('PASS two visible text columns turn together and back, resize during a fold or pending neighbour and closing mid-turn preserve CFI');
+
+    await mobile.setViewportSize({width:490,height:390});
+    // The same archive with RTL progression should advance from the left edge.
+    const rtlBook = await sampleBook(true);
+    await mobile.route('**/publication.epub',route => route.fulfill({contentType:'application/epub+zip',body:rtlBook}));
+    await mobile.goto(origin + '/index.html');
+    await mobile.evaluate(() => {
+      const channel = new MessageChannel();
+      window.events = []; window.port = channel.port1;
+      port.onmessage = e => events.push(JSON.parse(e.data));
+      window.postMessage('polka-reader',location.origin,[channel.port2]);
+    });
+    await mobile.waitForFunction(() => events.some(e => e.type === 'connected'));
+    await send({type:'open',settings:{...settings,pageTurn:'slide'}}); await waitPlace(1);
+    await send({type:'previous'});
+    await mobile.waitForTimeout(250);
+    assert.equal(await places(),1);
+    await mobile.touchscreen.tap(52,180); await waitPlace(2);
+    await touchMove(125,260,165,4); await waitFrame('slide');
+    assert(await mobile.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('#page')).transform).m41 > 0));
+    await touch('touchEnd'); await waitPlace(3);
+    const rtlForward = await mobile.evaluate(() => events.filter(e => e.type === 'place')[2].locator);
+    await mobile.touchscreen.tap(435,180); await waitPlace(4);
+    const rtlBack = await mobile.evaluate(() => events.filter(e => e.type === 'place')[3].locator);
+    assert(await mobile.evaluate(([a,b]) => new ePub.CFI().compare(a,b)>0,[rtlForward,rtlBack]));
+    console.log('PASS selection keeps its text; RTL edge taps and swipe advance in reading order, beginning has no phantom writes');
   } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));

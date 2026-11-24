@@ -6,12 +6,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import ru.polka.reader.data.*
 import ru.polka.reader.reader.*
@@ -24,8 +26,49 @@ private fun description(p: ReadingPoint?): String = p?.let {
 } ?: "Начало книги"
 
 @Composable
-internal fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, copy: Download,
-                         appearance: Appearance, onExit: () -> Unit) {
+internal fun OpenReader(account: Account, data: PolkaData, sync: ProgressSync, fileId: Long, workId: Long?,
+                        appearance: Appearance, onExit: () -> Unit) {
+    var source by remember(fileId) { mutableStateOf<Download?>(null) }
+    var permanent by remember(fileId) { mutableStateOf(false) }
+    var progress by remember(fileId) { mutableStateOf<Pair<Long, Long>?>(null) }
+    var error by remember(fileId) { mutableStateOf<String?>(null) }
+    var retry by remember(fileId) { mutableIntStateOf(0) }
+    LaunchedEffect(account.scope, fileId, workId, retry) {
+        error = null
+        progress = null
+        try {
+            data.withReadingFile(account.scope, fileId, workId, { bytes, total -> progress = bytes to total }) { copy, offline ->
+                permanent = offline
+                source = copy
+                awaitCancellation() // Keep this file available to the renderer for the screen's lifetime.
+            }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { error = friendly(e) }
+    }
+    val copy = source
+    if (copy != null) {
+        ReaderRoute(account, data, sync, copy, permanent, appearance, onExit)
+    } else {
+        BackHandler { onExit() }
+        Box(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
+            Column(Modifier.widthIn(max = 420.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (error != null) Notice(error!!) { retry++ } else {
+                    Text("Подготавливаем книгу")
+                    val transfer = progress
+                    if (transfer == null) LinearProgressIndicator() else {
+                        LinearProgressIndicator(progress = { (transfer.first.toDouble() / transfer.second.coerceAtLeast(1)).toFloat() })
+                        Text("${sizeLabel(transfer.first)} из ${sizeLabel(transfer.second)}")
+                    }
+                }
+                TextButton(onClick = onExit) { Text(if (error == null) "Отменить" else "Назад") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, copy: Download, permanent: Boolean,
+                        appearance: Appearance, onExit: () -> Unit) {
     val scope = account.scope
     val fileId = copy.fileId
     val coroutine = rememberCoroutineScope()
@@ -50,7 +93,7 @@ internal fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, 
             val restored = sync.open(scope, fileId)
             alternate = restored.alternate
             start = restored
-            data.markOpened(scope, fileId)
+            data.markOpened(copy)
         } catch (e: CancellationException) { throw e } catch (e: Exception) { initialError = friendly(e) }
     }
     BackHandler { onExit() }
@@ -67,14 +110,15 @@ internal fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, 
         local?.error != null -> local!!.error!!
         local?.dirty == true -> "Сохранено на устройстве · ожидает отправки"
         local?.serverVersion?.let { it > 0 } == true -> "Синхронизировано"
-        else -> "Доступна офлайн"
+        permanent -> "Доступна офлайн"
+        else -> "Открыта для чтения"
     }
     var marks by remember { mutableStateOf(false) }
     var bookmark by remember { mutableStateOf<ReaderPlace?>(null) }
     var selection by remember { mutableStateOf<BookSelection?>(null) }
     var annotations by remember { mutableStateOf(emptyList<AnnotationEntry>()) }
     var message by remember { mutableStateOf<String?>(null) }
-    val jumpTo: (String) -> Unit = { jump = ReaderJump(System.nanoTime(), locator = it) }
+    val jumpTo: (String) -> Unit = { jump = ReaderJump(System.nanoTime(), locator = it, returnable = true) }
     LaunchedEffect(fileId, account.authenticated) {
         if (account.authenticated && copy.format == "epub") {
             try { annotations = data.annotations(scope, fileId) } catch (e: CancellationException) { throw e }
@@ -86,7 +130,8 @@ internal fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, 
             { coroutine.launch { appearance.save(it) } },
             { p -> sync.record(scope, fileId, ReadingPoint(p.locator, p.percentage, p.chapter), forceNext); forceNext = false },
             onExit, { bookmark = it }, { selection = it }, { marks = true },
-            annotations.filter { it.quote.isNotEmpty() }.map { it.locator }, status, jump)
+            annotations.filter { it.quote.isNotEmpty() }.map { it.locator }, status, jump,
+            onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } })
     }
     val row = local
     if (row?.conflictVersion != null) {

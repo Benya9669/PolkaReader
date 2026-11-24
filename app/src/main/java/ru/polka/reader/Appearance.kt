@@ -19,20 +19,45 @@ private val font = intPreferencesKey("reader_font")
 private val leading = floatPreferencesKey("reader_leading")
 private val margin = intPreferencesKey("reader_margin")
 private val paper = stringPreferencesKey("reader_paper")
+private val pageTurn = stringPreferencesKey("reader_page_turn")
+private val activeProfile = stringPreferencesKey("reader_profile")
+private val wideSpread = booleanPreferencesKey("reader_wide_spread")
+private val nightFont = intPreferencesKey("night_font")
+private val nightLeading = floatPreferencesKey("night_leading")
+private val nightMargin = intPreferencesKey("night_margin")
+private val nightPaper = stringPreferencesKey("night_paper")
+private val family = stringPreferencesKey("reader_font_family")
+private val nightFamily = stringPreferencesKey("night_font_family")
 private val appTheme = stringPreferencesKey("app_theme")
 
 internal class Appearance(private val context: Context) {
-    val book = context.preferences.data.map {
-        BookSettings(it[font] ?: 110, it[leading] ?: 1.5f, it[margin] ?: 16, it[paper] ?: "light")
+    val book = context.preferences.data.map { values ->
+        val night = values[activeProfile] == "night"
+        BookSettings(
+            fontPercent = values[if (night) nightFont else font] ?: if (night) 120 else 110,
+            lineHeight = values[if (night) nightLeading else leading] ?: if (night) 1.6f else 1.5f,
+            marginDp = values[if (night) nightMargin else margin] ?: 16,
+            theme = values[if (night) nightPaper else paper] ?: if (night) "dark" else "light",
+            pageTurn = values[pageTurn] ?: "slide", spread = values[wideSpread] ?: true,
+            profile = if (night) "night" else "day",
+            fontFamily = values[if (night) nightFamily else family] ?: "book",
+        )
     }
     val theme = context.preferences.data.map { it[appTheme] ?: "Системная" }
     suspend fun setTheme(value: String) { context.preferences.edit { it[appTheme] = value } }
+    suspend fun selectProfile(night: Boolean) {
+        context.preferences.edit { it[activeProfile] = if (night) "night" else "day" }
+    }
     suspend fun save(value: BookSettings) {
+        val night = value.profile == "night"
         context.preferences.edit {
-            it[font] = value.fontPercent
-            it[leading] = value.lineHeight
-            it[margin] = value.marginDp
-            it[paper] = value.theme
+            it[if (night) nightFont else font] = value.fontPercent
+            it[if (night) nightLeading else leading] = value.lineHeight
+            it[if (night) nightMargin else margin] = value.marginDp
+            it[if (night) nightPaper else paper] = value.theme
+            it[if (night) nightFamily else family] = value.fontFamily
+            it[pageTurn] = value.pageTurn
+            it[wideSpread] = value.spread
         }
     }
 }

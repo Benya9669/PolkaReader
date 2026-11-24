@@ -7,11 +7,17 @@
   <title>Текст книги</title>
   <style>
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    #page { width: calc(100% - 2 * var(--margin, 16px)); max-width: 760px; height: 100%; margin: auto; }
+    #book-turn { position: relative; overflow: hidden; isolation: isolate; width: calc(100% - 2 * var(--margin, 16px)); max-width: 760px; height: 100%; margin: auto; background: var(--paper); }
+    #book-turn[data-spread="true"] { max-width: 1480px; }
+    #page, #preview, #back, #shadow { position: absolute; inset: 0; }
+    #page, #preview { background-color: var(--paper); }
+    #page { z-index: 1; }
+    #preview { visibility: hidden; pointer-events: none; }
+    #back, #shadow { z-index: 2; pointer-events: none; display: none; }
   </style>
   <script defer src="jszip.min.js"></script>
   <script defer src="epub.min.js"></script>
   <script defer src="reader.js"></script>
 </head>
-<body><main id="page" aria-label="Текст книги"></main></body>
+<body><div id="book-turn"><main id="page" aria-label="Текст книги"></main><div id="preview" inert aria-hidden="true"></div><div id="shadow" aria-hidden="true"></div><div id="back" aria-hidden="true"></div></div></body>
 </html>

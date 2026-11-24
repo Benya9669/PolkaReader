@@ -55,7 +55,8 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var detail by rememberSaveable { mutableStateOf<Long?>(null) }
     var reading by rememberSaveable { mutableStateOf<Long?>(null) }
-    var openAfterDownload by rememberSaveable { mutableStateOf<Long?>(null) }
+    var readingWork by rememberSaveable { mutableStateOf<Long?>(null) }
+    val open: (Long, Long?) -> Unit = { fileId, workId -> readingWork = workId; reading = fileId }
     var menu by remember { mutableStateOf(false) }
     var config by rememberSaveable { mutableStateOf(false) }
     var about by rememberSaveable { mutableStateOf(false) }
@@ -68,16 +69,9 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { if (tab == 1) error = friendly(e) }
     }
-    LaunchedEffect(downloads, openAfterDownload) {
-        openAfterDownload?.let { target ->
-            if (downloads.any { it.fileId == target }) { reading = target; openAfterDownload = null }
-        }
-    }
     val current = reading
     if (current != null) {
-        val copy = downloads.firstOrNull { it.fileId == current }
-        if (copy != null) ReaderRoute(account, data, sync, copy, appearance) { reading = null; refresh++ }
-        else { BackHandler { reading = null }; Waiting() }
+        OpenReader(account, data, sync, current, readingWork, appearance) { reading = null; refresh++ }
         return
     }
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -125,17 +119,9 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
                 Row(Modifier.weight(1f)) {
                     if (!singleDetail) Box(Modifier.weight(1f)) {
                         when (tab) {
-                            0 -> Home(data, account, downloads, positions, refresh, { choose(1) }, { reading = it }, { book, fileId ->
-                                val edition = book.editions.firstOrNull { ed -> ed.files.any { it.id == fileId } }
-                                val file = edition?.files?.firstOrNull { it.id == fileId }
-                                if (edition != null && file != null && file.readable) {
-                                    transfers.start(data, scope, book, edition, file)
-                                    openAfterDownload = fileId
-                                }
-                                tab = 1; detail = book.id
-                            })
+                            0 -> Home(data, account, downloads, positions, refresh, { choose(1) }, open)
                             1 -> Catalog(data, scope, libraryList, refresh, { detail = it })
-                            2 -> DeviceDownloads(downloads, positions, { reading = it }, { id ->
+                            2 -> DeviceDownloads(downloads, positions, { id -> open(id, downloads.find { it.fileId == id }?.workId) }, { id ->
                                 coroutine.launch {
                                     try { data.remove(scope, id) } catch (e: Exception) { error = friendly(e) }
                                 }
@@ -149,10 +135,7 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
                             key(selected) {
                                 BookDetail(data, scope, selected, libraryList, downloads, positions, progress, refresh,
                                     { b, ed, f -> transfers.start(data, scope, b, ed, f) },
-                                    { id -> if (openAfterDownload == id) openAfterDownload = null; transfers.cancel(id) },
-                                    { reading = it }, { b, ed, f ->
-                                        transfers.start(data, scope, b, ed, f); openAfterDownload = f.id
-                                    })
+                                    transfers::cancel, open)
                             }
                         }
                     }
@@ -189,7 +172,8 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
     }
 }
 
-@Composable internal fun Cover(data: PolkaData, scope: String, editionId: Long?, title: String, modifier: Modifier) {
+@Composable internal fun Cover(data: PolkaData, scope: String, editionId: Long?, title: String, modifier: Modifier,
+                              scale: ContentScale = ContentScale.Crop) {
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, scope, editionId) {
         value = null
         if (editionId != null) try {
@@ -207,7 +191,7 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
     }
     Box(modifier.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primaryContainer),
         contentAlignment = Alignment.Center) {
-        bitmap?.let { Image(it, "Обложка книги «$title»", Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+        bitmap?.let { Image(it, "Обложка книги «$title»", Modifier.fillMaxSize(), contentScale = scale) }
             ?: Text(title.trim().take(1), fontFamily = FontFamily.Serif, style = MaterialTheme.typography.headlineLarge,
                 color = MaterialTheme.colorScheme.onPrimaryContainer)
     }
@@ -215,7 +199,7 @@ internal fun Shelf(account: Account, data: PolkaData, sync: ProgressSync, transf
 
 @Composable
 private fun Home(data: PolkaData, account: Account, downloads: List<Download>, rows: List<ProgressRow>, refresh: Int,
-                 catalog: () -> Unit, read: (Long) -> Unit, fetch: (Book, Long) -> Unit) {
+                 catalog: () -> Unit, read: (Long, Long?) -> Unit) {
     var remote by remember { mutableStateOf(emptyList<ReadingBook>()) }
     var error by remember { mutableStateOf<String?>(null) }
     var retry by remember { mutableIntStateOf(0) }
@@ -224,14 +208,16 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
         try { remote = data.home(account.scope) } catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = friendly(e) }
     }
-    val opened = downloads.filter { it.lastOpenedAt != null }.maxByOrNull { it.lastOpenedAt ?: 0 }
+    val recent by remember(account.scope) { data.recentBook(account.scope) }.collectAsState(initial = null)
+    val opened = (downloads.mapNotNull { copy -> copy.lastOpenedAt?.let { copy.recent(it) } } + listOfNotNull(recent))
+        .maxByOrNull { it.openedAt }
     val local = opened?.let { book -> rows.firstOrNull { it.fileId == book.fileId } }
     val latest = remote.maxByOrNull { timestamp(it.updated) }
     val localWins = opened != null && (latest == null || local?.dirty == true ||
-        maxOf(opened.lastOpenedAt ?: 0, local?.lastReadAt ?: 0) >= timestamp(latest.updated))
+        maxOf(opened.openedAt, local?.lastReadAt ?: 0) >= timestamp(latest.updated))
     val id = if (localWins) opened?.fileId else latest?.fileId
     val copy = downloads.firstOrNull { it.fileId == id }
-    val title = copy?.title ?: latest?.book?.title
+    val title = if (localWins) opened?.title else latest?.book?.title
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Продолжить чтение", style = MaterialTheme.typography.headlineMedium)
@@ -239,7 +225,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
             val pct = if (localWins) local?.point?.percentage ?: 0.0 else latest!!.percentage
             val label = if (localWins) local?.point?.let(::placeLabel) ?: "Начало книги"
                 else listOfNotNull(latest?.chapter, percent(pct)).joinToString(" · ")
-            val open = { if (copy != null) read(id) else latest?.let { fetch(it.book, id) }; Unit }
+            val open = { read(id, if (localWins) opened?.workId else latest?.book?.id) }
             val heroPaper = Color(0xfffff4d8)
             val heroInk = Color(0xff294738)
             Surface(Modifier.widthIn(max = 940.dp).fillMaxWidth(), shape = RoundedCornerShape(18.dp),
@@ -248,7 +234,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
                     val large = maxWidth >= 580.dp
                     val stack = LocalDensity.current.fontScale > 1.5f && !large
                     val jacket: @Composable () -> Unit = {
-                        Cover(data, account.scope, copy?.editionId ?: latest?.book?.editions?.firstOrNull { ed -> ed.files.any { it.id == id } && ed.hasCover }?.id,
+                        Cover(data, account.scope, if (localWins) opened?.editionId else latest?.book?.editions?.firstOrNull { ed -> ed.files.any { it.id == id } && ed.hasCover }?.id,
                             title, if (large) Modifier.size(156.dp, 224.dp) else Modifier.size(88.dp, 128.dp))
                     }
                     val details: @Composable () -> Unit = {
@@ -256,7 +242,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
                             Text(if (copy != null) "${copy.format.uppercase()} · На устройстве" else "В библиотеке",
                                 style = MaterialTheme.typography.labelMedium, color = heroPaper)
                             Text(title, style = if (large) MaterialTheme.typography.displaySmall else MaterialTheme.typography.headlineSmall)
-                            Text(copy?.authors ?: latest?.book?.authors.orEmpty())
+                            Text(if (localWins) opened?.authors.orEmpty() else latest?.book?.authors.orEmpty())
                             Text(label, style = MaterialTheme.typography.labelLarge)
                             LinearProgressIndicator(progress = { pct.toFloat() }, modifier = Modifier.fillMaxWidth(),
                                 color = Color(0xffefb667), trackColor = Color(0xff4e6053))
@@ -269,7 +255,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
                         Button(open, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(
                             containerColor = heroPaper, contentColor = heroInk)) {
                             Icon(Icons.Outlined.MenuBook, null); Spacer(Modifier.width(10.dp))
-                            Text(if (copy != null) "Продолжить чтение" else "Скачать и читать")
+                            Text("Продолжить чтение")
                         }
                     }
                 }
@@ -282,7 +268,7 @@ private fun Home(data: PolkaData, account: Account, downloads: List<Download>, r
         if (others.isNotEmpty()) {
             Text("На устройстве", style = MaterialTheme.typography.titleLarge)
             others.forEach { other ->
-                Row(Modifier.widthIn(max = 940.dp).fillMaxWidth().clickable { read(other.fileId) }.padding(vertical = 4.dp),
+                Row(Modifier.widthIn(max = 940.dp).fillMaxWidth().clickable { read(other.fileId, other.workId) }.padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Cover(data, account.scope, other.editionId, other.title, Modifier.size(38.dp, 54.dp))
                     Column(Modifier.weight(1f)) { Text(other.title, style = MaterialTheme.typography.titleMedium)

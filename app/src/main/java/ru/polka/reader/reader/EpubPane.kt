@@ -5,6 +5,11 @@ import android.content.Context
 import android.net.Uri
 import android.webkit.*
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -18,9 +23,19 @@ private const val ORIGIN = "https://reader.invalid"
 private const val ENTRY = "$ORIGIN/reader/index.html"
 
 private fun BookSettings.toJson() = JSONObject().put("fontPercent", fontPercent)
-    .put("lineHeight", lineHeight.toDouble()).put("marginDp", marginDp).put("theme", theme)
+    .put("lineHeight", lineHeight.toDouble()).put("marginDp", marginDp).put("theme", theme).put("pageTurn", pageTurn)
+    .put("fontFamily", fontFamily)
 
 private fun ReaderPlace.toJson() = JSONObject().put("locator", locator).put("percentage", percentage).put("chapter", chapter)
+
+private fun JSONObject.toPlace(): ReaderPlace? {
+    val locator = optString("locator")
+    val percentage = optDouble("percentage")
+    if (locator.length > 4000 || !locator.startsWith("epubcfi(") || !locator.endsWith(")") || percentage !in 0.0..1.0) return null
+    return ReaderPlace(locator, percentage, if (isNull("chapter")) null else optString("chapter").take(500))
+}
+
+private data class Footnote(val text: String, val target: String)
 
 /** This local origin has exactly four assets and the selected private book. Every other request gets a local 404. */
 private class PublicationClient(private val context: Context, private val book: File, val loaded: (WebView) -> Unit) : WebViewClient() {
@@ -56,10 +71,13 @@ internal fun EpubPane(
     onControl: (((ReaderAction) -> Unit)?) -> Unit, onPlace: (ReaderPlace, Boolean) -> Unit,
     onChapters: (List<Chapter>) -> Unit, onSelection: (BookSelection) -> Unit,
     onTap: () -> Unit, onError: (String) -> Unit,
+    spread: Boolean = false, onLinkNavigate: (ReaderPlace) -> Unit = {},
 ) {
     val context = LocalContext.current
     val currentStyle by rememberUpdatedState(style)
     val currentHighlights by rememberUpdatedState(highlights)
+    val currentSpread by rememberUpdatedState(spread)
+    val linkNavigate by rememberUpdatedState(onLinkNavigate)
     val place by rememberUpdatedState(onPlace)
     val tap by rememberUpdatedState(onTap)
     val select by rememberUpdatedState(onSelection)
@@ -67,6 +85,7 @@ internal fun EpubPane(
     val error by rememberUpdatedState(onError)
     val control by rememberUpdatedState(onControl)
     var port by remember { mutableStateOf<WebMessagePort?>(null) }
+    var footnote by remember(file) { mutableStateOf<Footnote?>(null) }
     fun send(value: JSONObject) { port?.postMessage(WebMessage(value.toString())) }
 
     val web = remember(file) {
@@ -89,17 +108,17 @@ internal fun EpubPane(
                             "connected" -> {
                                 port = channel
                                 send(JSONObject().put("type", "open").put("initial", initial?.toJson())
-                                    .put("settings", currentStyle.toJson()).put("highlights", JSONArray(currentHighlights)))
+                                    .put("settings", currentStyle.toJson()).put("spread", currentSpread).put("highlights", JSONArray(currentHighlights)))
                                 control { action -> send(JSONObject().put("type", action.type)
                                     .put("locator", action.locator).put("percentage", action.percentage).put("persist", action.persist)) }
                             }
-                            "place" -> {
-                                val locator = event.optString("locator")
-                                val percent = event.optDouble("percentage")
-                                if (locator.length <= 4000 && locator.startsWith("epubcfi(") && locator.endsWith(")") && percent in 0.0..1.0) {
-                                    place(ReaderPlace(locator, percent,
-                                        if (event.isNull("chapter")) null else event.optString("chapter").take(500)),
-                                        event.optBoolean("persist"))
+                            "place" -> event.toPlace()?.let { place(it, event.optBoolean("persist")) }
+                            "linkOrigin" -> event.toPlace()?.let(linkNavigate)
+                            "footnote" -> {
+                                val target = event.optString("target")
+                                val text = event.optString("text").take(8000)
+                                if (text.isNotBlank() && target.length in 1..4000) {
+                                    footnote = Footnote(text, target)
                                 }
                             }
                             "chapters" -> {
@@ -126,7 +145,20 @@ internal fun EpubPane(
         }
     }
     AndroidView(factory = { web }, modifier = Modifier.fillMaxSize())
-    LaunchedEffect(style) { send(JSONObject().put("type", "style").put("settings", style.toJson())) }
+    footnote?.let { note ->
+        AlertDialog(
+            onDismissRequest = { footnote = null }, title = { Text("Сноска") },
+            text = { Text(note.text, Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(onClick = { footnote = null }) { Text("Закрыть") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    footnote = null
+                    send(JSONObject().put("type", "link").put("locator", note.target))
+                }) { Text("Перейти к сноске") }
+            },
+        )
+    }
+    LaunchedEffect(style, spread) { send(JSONObject().put("type", "style").put("settings", style.toJson()).put("spread", spread)) }
     LaunchedEffect(highlights) { send(JSONObject().put("type", "highlights").put("locators", JSONArray(highlights))) }
     DisposableEffect(web) {
         onDispose {
