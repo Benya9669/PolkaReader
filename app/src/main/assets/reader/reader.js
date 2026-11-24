@@ -224,6 +224,20 @@
     meta.httpEquiv = 'Content-Security-Policy';
     meta.content = "default-src 'none'; img-src blob: data:; style-src 'unsafe-inline' blob:; font-src blob: data:; media-src blob: data:; form-action 'none'";
     doc.head.prepend(meta);
+    // Keep the stylesheet in the chapter head. Wrapping book text or adding
+    // nodes to its body would change the EPUB CFIs shared with the web reader.
+    const links = doc.createElement('style');
+    links.textContent = [
+      ':root { --polka-link:#075b47; --polka-visited:#674478; --polka-focus:#91520a }',
+      ':root[data-polka-paper="dark"] { --polka-link:#85d7ba; --polka-visited:#d5b3eb; --polka-focus:#f6c66f }',
+      ':root[data-polka-paper="sepia"] { --polka-link:#315b42; --polka-visited:#704c64; --polka-focus:#834a10 }',
+      'html body a[href] { color:var(--polka-link) !important; text-decoration:underline !important; text-underline-offset:.12em }',
+      'html body a[href]:visited { color:var(--polka-visited) !important }',
+      'html body a[href] span, html body a[href] sup { color:inherit !important }',
+      'html body a[href]:focus { outline:2px solid var(--polka-focus) !important; outline-offset:2px }'
+    ].join('\n');
+    doc.head.append(links);
+    doc.documentElement.dataset.polkaPaper = settings.theme;
   }
 
   const noteRole = element =>
@@ -377,6 +391,9 @@
     stage.style.setProperty('--fold-light',dark ? '#3c403a' : sepia ? '#fff5de' : '#fffefa');
     stage.style.setProperty('--fold',dark ? '#2a2d29' : sepia ? '#e3d4b6' : '#e7e5dd');
     document.documentElement.style.setProperty('--margin', s.marginDp + 'px');
+    for (const rendition of [view,preview].filter(Boolean)) {
+      for (const contents of rendition.getContents()) contents.document.documentElement.dataset.polkaPaper = s.theme;
+    }
     styleText(view,s);
   }
 

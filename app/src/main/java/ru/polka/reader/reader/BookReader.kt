@@ -145,53 +145,53 @@ fun BookReader(
                     enter = if (motionEnabled) fadeIn(tween(130)) else EnterTransition.None,
                     exit = if (motionEnabled) fadeOut(tween(100)) else ExitTransition.None,
                 ) {
-                  Box(Modifier.fillMaxSize()) {
-                    Surface(Modifier.fillMaxWidth().align(Alignment.TopCenter), tonalElevation = 4.dp) {
-                        Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Tool(Icons.AutoMirrored.Filled.ArrowBack, "Выйти из книги", true, onExit)
-                            Text(title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium)
-                            Tool(Icons.Default.AutoStories, "Перелистывание") { menu = "turn" }
-                            Tool(Icons.Default.VisibilityOff, "Скрыть панели") { panels = false }
+                    Box(Modifier.fillMaxSize()) {
+                        Surface(Modifier.fillMaxWidth().align(Alignment.TopCenter), tonalElevation = 4.dp) {
+                            Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Tool(Icons.AutoMirrored.Filled.ArrowBack, "Выйти из книги", true, onExit)
+                                Text(title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.titleMedium)
+                                Tool(Icons.Default.AutoStories, "Перелистывание") { menu = "turn" }
+                                Tool(Icons.Default.VisibilityOff, "Скрыть панели") { panels = false }
+                            }
+                        }
+                        Surface(Modifier.fillMaxWidth().align(Alignment.BottomCenter), tonalElevation = 4.dp) {
+                            Column(Modifier.padding(horizontal = 8.dp)) {
+                                val point = place
+                                if (returnLocator != null) {
+                                    TextButton(::goBackToReading, enabled = point != null) { Text("Вернуться к месту чтения") }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Tool(Icons.AutoMirrored.Filled.ArrowBack, "Предыдущая страница", point != null) {
+                                        control?.invoke(ReaderAction("previous"))
+                                    }
+                                    val location = if (pdf && point != null) "Стр. ${point.locator} из $totalPages"
+                                        else point?.chapter.orEmpty()
+                                    Text(listOf(location, point?.let { "${(it.percentage * 100).roundToInt()}%" }.orEmpty())
+                                        .filter { it.isNotBlank() }.joinToString(" · "), Modifier.weight(1f), maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis)
+                                    Tool(Icons.AutoMirrored.Filled.ArrowForward, "Следующая страница", point != null) {
+                                        control?.invoke(ReaderAction("next"))
+                                    }
+                                }
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.SpaceEvenly) {
+                                    if (pdf) {
+                                        Tool(Icons.Default.FindInPage, "Перейти к странице", point != null) { menu = "page" }
+                                        Tool(Icons.Default.ZoomOut, "Уменьшить масштаб", zoom > 0.65f) { zoom = (zoom - .25f).coerceAtLeast(.65f) }
+                                        Tool(Icons.Default.ZoomIn, "Увеличить масштаб", zoom < 3f) { zoom = (zoom + .25f).coerceAtMost(3f) }
+                                    } else {
+                                        Tool(Icons.AutoMirrored.Filled.List, "Оглавление") { menu = if (sideContents) "" else "contents" }
+                                        Tool(Icons.Default.TextFields, "Настройки текста") { menu = "style" }
+                                    }
+                                    Tool(Icons.Default.BookmarkAdd, "Добавить закладку", point != null) { point?.let(onBookmark) }
+                                    Tool(Icons.Default.Bookmarks, "Закладки и заметки", true, onShowMarks)
+                                }
+                                if (status.isNotBlank()) Text(status, Modifier.padding(start = 8.dp, bottom = 4.dp),
+                                    style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
-                    Surface(Modifier.fillMaxWidth().align(Alignment.BottomCenter), tonalElevation = 4.dp) {
-                        Column(Modifier.padding(horizontal = 8.dp)) {
-                            val point = place
-                            if (returnLocator != null) {
-                                TextButton(::goBackToReading, enabled = point != null) { Text("Вернуться к месту чтения") }
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Tool(Icons.AutoMirrored.Filled.ArrowBack, "Предыдущая страница", point != null) {
-                                    control?.invoke(ReaderAction("previous"))
-                                }
-                                val location = if (pdf && point != null) "Стр. ${point.locator} из $totalPages"
-                                    else point?.chapter.orEmpty()
-                                Text(listOf(location, point?.let { "${(it.percentage * 100).roundToInt()}%" }.orEmpty())
-                                    .filter { it.isNotBlank() }.joinToString(" · "), Modifier.weight(1f), maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis)
-                                Tool(Icons.AutoMirrored.Filled.ArrowForward, "Следующая страница", point != null) {
-                                    control?.invoke(ReaderAction("next"))
-                                }
-                            }
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.SpaceEvenly) {
-                                if (pdf) {
-                                    Tool(Icons.Default.FindInPage, "Перейти к странице", point != null) { menu = "page" }
-                                    Tool(Icons.Default.ZoomOut, "Уменьшить масштаб", zoom > 0.65f) { zoom = (zoom - .25f).coerceAtLeast(.65f) }
-                                    Tool(Icons.Default.ZoomIn, "Увеличить масштаб", zoom < 3f) { zoom = (zoom + .25f).coerceAtMost(3f) }
-                                } else {
-                                    Tool(Icons.AutoMirrored.Filled.List, "Оглавление") { menu = if (sideContents) "" else "contents" }
-                                    Tool(Icons.Default.TextFields, "Настройки текста") { menu = "style" }
-                                }
-                                Tool(Icons.Default.BookmarkAdd, "Добавить закладку", point != null) { point?.let(onBookmark) }
-                                Tool(Icons.Default.Bookmarks, "Закладки и заметки", true, onShowMarks)
-                            }
-                            if (status.isNotBlank()) Text(status, Modifier.padding(start = 8.dp, bottom = 4.dp),
-                                style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                  }
                 }
                 if (!panels && accessibility.isTouchExplorationEnabled) {
                     FilledTonalButton({ panels = true }, Modifier.align(Alignment.BottomEnd)) { Text("Панели чтения") }

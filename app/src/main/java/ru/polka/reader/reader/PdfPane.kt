@@ -25,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import kotlin.math.*
 
@@ -61,7 +63,7 @@ private fun renderPages(file: File, requested: Int, width: Int, spread: Boolean)
         val count = document.pageCount
         require(count > 0)
         val first = firstPage(requested.coerceIn(1, count), spread)
-        val slots = if (spread) 2 else 1
+        val slots = if (spread && count > 1) 2 else 1
         // At most three nearby spreads are retained. Bound decoded memory even on small devices.
         val pixelBudget = min(3_200_000.0, Runtime.getRuntime().maxMemory() / 64.0) / slots
         val pages = (first..min(first + slots - 1, count)).map { number ->
@@ -81,6 +83,7 @@ private fun renderPages(file: File, requested: Int, width: Int, spread: Boolean)
 
 private class PdfCanvas(context: Context, private val file: File, first: Int) : View(context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val decoder = Mutex()
     private var load: Job? = null
     private val nearby = mutableMapOf<Int, PdfPages>()
     private val unavailable = mutableSetOf<Int>()
@@ -168,7 +171,10 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
         val doublePage = spread
         load = scope.launch {
             try {
-                val pages = withContext(Dispatchers.IO) { renderPages(file, target, w, doublePage) }
+                val pages = withContext(Dispatchers.IO) {
+                    // A native render already in progress may finish after a resize cancels its coroutine.
+                    decoder.withLock { renderPages(file, target, w, doublePage) }
+                }
                 nearby[pages.first] = pages
                 if (target == firstPage(pendingJump ?: number, spread)) {
                     show(pages, pendingJump ?: number, persistJump)
@@ -315,7 +321,7 @@ private class PdfCanvas(context: Context, private val file: File, first: Int) : 
     override fun onDraw(canvas: Canvas) {
         val pages = current
         painter.draw(canvas, width, height, pages, adjacent(direction)?.let(nearby::get),
-            spread, mode, direction, progress, zoom, panX, panY)
+            spread && pages != null && pages.total > 1, mode, direction, progress, zoom, panX, panY)
         panX = panX.coerceIn(painter.minPanX, painter.maxPanX)
         panY = panY.coerceIn(painter.minPanY, painter.maxPanY)
     }

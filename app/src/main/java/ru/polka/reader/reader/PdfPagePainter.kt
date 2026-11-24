@@ -115,6 +115,9 @@ internal class PdfPagePainter(private val density: Float) {
         val slices = 14
         var x = middle
         var z = 0f
+        var edgeX = middle
+        var edgeTop = 0f
+        var edgeBottom = h
         for (i in 0 until slices) {
             val u0 = i.toFloat() / slices
             val u1 = (i + 1f) / slices
@@ -135,16 +138,28 @@ internal class PdfPagePainter(private val density: Float) {
                 c.save()
                 c.concat(matrix)
                 c.clipRect(min(a, b), 0f, max(a, b) + .4f, h)
-                c.drawColor(desk)
-                leaf(c, if (front) old else next, if (front) moving else landing, w, h, true)
-                val alpha = (53 * (1 - abs(cos(angle)))).toInt()
-                c.drawColor(Color.argb(alpha, 88, 66, 43))
+                val face = if (front) old else next
+                val slot = if (front) moving else landing
+                face.pages.getOrNull(slot)?.let { page ->
+                    val area = position(page, slot, w, h, true)
+                    val extent = abs((if (slot == 0) area.left else area.right) - middle) / middle
+                    if (extent >= u0 && extent <= u1) {
+                        edgeX = x + dx * (extent - u0) * slices
+                        edgeTop = area.top + topB
+                        edgeBottom = area.bottom - topB
+                    }
+                    // The desk behind a narrow or short page stays stationary as the paper bends.
+                    c.clipRect(area)
+                    leaf(c, face, slot, w, h, true)
+                    val alpha = (53 * (1 - abs(cos(angle)))).toInt()
+                    c.drawColor(Color.argb(alpha, 88, 66, 43))
+                }
                 c.restore()
             }
             x = endX
             z = endZ
         }
-        gradient(c, shadow, x, x + dir * (20 * density * bend).toFloat(), 0f, h)
+        gradient(c, shadow, edgeX, edgeX + dir * (20 * density * bend).toFloat(), edgeTop, edgeBottom)
     }
 
     private fun quad(v: FloatArray, ax: Float, ay: Float, bx: Float, by: Float, bottomA: Float, bottomB: Float) {
@@ -154,30 +169,36 @@ internal class PdfPagePainter(private val density: Float) {
 
     private fun singleCurl(c: Canvas, old: PdfPages, next: PdfPages, w: Float, h: Float, dir: Int, p: Float) {
         group(c, next, w, h, false)
+        val area = position(old.pages.first(), 0, w, h, false)
+        val left = area.left
+        val right = area.right
+        val top = area.top
+        val bottom = area.bottom
+        val width = area.width()
+        val height = area.height()
         val depth = sin(Math.PI * p).toFloat()
-        val edge = if (dir > 0) w * (1 - p) else w * p
-        val ribbon = min(w * .13f, 62 * density) * depth
-        val tilt = dir * min(w * .035f, h * .033f) * depth
+        val edge = if (dir > 0) right - width * p else left + width * p
+        val ribbon = min(width * .13f, 62 * density) * depth
+        val tilt = dir * min(width * .035f, height * .033f) * depth
         val spine = edge - dir * ribbon * .5f
         val tip = edge + dir * ribbon * .5f
-        val fixed = if (dir > 0) 0f else w
+        val fixed = if (dir > 0) left else right
         shape.reset()
-        shape.moveTo(fixed, 0f)
-        shape.lineTo(spine + tilt, 0f)
-        shape.quadTo(spine - tilt * .65f, h * .55f, spine - tilt, h)
-        shape.lineTo(fixed, h)
+        shape.moveTo(fixed, top)
+        shape.lineTo(spine + tilt, top)
+        shape.quadTo(spine - tilt * .65f, top + height * .55f, spine - tilt, bottom)
+        shape.lineTo(fixed, bottom)
         shape.close()
         c.save()
         c.clipPath(shape)
-        c.drawColor(desk)
         group(c, old, w, h, false)
         c.restore()
 
         shape.reset()
-        shape.moveTo(spine + tilt, 0f)
-        shape.quadTo(spine - tilt * .65f, h * .55f, spine - tilt, h)
-        shape.lineTo(tip - tilt, h)
-        shape.quadTo(tip - tilt * .3f, h * .48f, tip + tilt, 0f)
+        shape.moveTo(spine + tilt, top)
+        shape.quadTo(spine - tilt * .65f, top + height * .55f, spine - tilt, bottom)
+        shape.lineTo(tip - tilt, bottom)
+        shape.quadTo(tip - tilt * .3f, top + height * .48f, tip + tilt, top)
         shape.close()
         c.save()
         c.clipPath(shape)
@@ -186,8 +207,8 @@ internal class PdfPagePainter(private val density: Float) {
         c.scale(-1f, 1f, spine, h / 2)
         group(c, old, w, h, false)
         c.restore()
-        gradient(c, back, spine - dir * abs(tilt), tip + dir * abs(tilt), 0f, h)
+        gradient(c, back, spine - dir * abs(tilt), tip + dir * abs(tilt), top, bottom)
         c.restore()
-        gradient(c, shadow, tip + dir * abs(tilt), tip + dir * (abs(tilt) + 17 * density * depth), 0f, h)
+        gradient(c, shadow, tip + dir * abs(tilt), tip + dir * (abs(tilt) + 17 * density * depth), top, bottom)
     }
 }

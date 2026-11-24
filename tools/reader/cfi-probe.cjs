@@ -21,7 +21,7 @@ async function sampleBook(rtl = false) {
   const paragraphs = Array.from({length: 90}, (_, i) => '<p id="p' + i + '">Абзац ' + i + '. ' +
     esc('Тихий ветер шевелил страницы раскрытой книги. '.repeat(5)) + '</p>').join('');
   zip.file('chapter.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Глава</title></head><body style="font-family:Georgia,serif">' + paragraphs +
-    '<p><a id="ref" href="notes.xhtml#f1" epub:type="noteref">Сноска</a> · <a id="seealso" href="notes.xhtml#more">См. также</a></p></body></html>');
+    '<p><a id="ref" href="notes.xhtml#f1" epub:type="noteref">Сноска</a> · <a id="seealso" href="notes.xhtml#more"><span id="link-label">См. также</span></a> · <a id="external" href="https://example.invalid/info">Внешняя ссылка</a></p></body></html>');
   zip.file('notes.xhtml','<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Примечания</title></head><body><aside epub:type="footnote" id="f1"><p>Полярная звезда указывает на север. <a role="doc-backlink" href="chapter.xhtml#ref">Назад</a></p></aside><p id="more">Дополнительный материал</p></body></html>');
   return zip.generateAsync({type: 'nodebuffer'});
 }
@@ -94,6 +94,29 @@ async function main() {
     assert.deepEqual(await visibleAnchor(mobile,start.cfi), {id:start.paragraph,visible:true});
     assert.equal(await mobile.evaluate(() => document.getElementById('page').clientHeight),520);
     assert.equal(await mobile.evaluate(() => events.find(e => e.type === 'place').persist), false);
+    function linkPaint() {
+      const doc = document;
+      const link = doc.getElementById('ref'), win = doc.defaultView;
+      link.focus({preventScroll:true});
+      const style = win.getComputedStyle(link);
+      const paint = {color:style.color, underline:style.textDecorationLine, outline:style.outlineStyle,
+        focus:style.outlineColor, visited:style.getPropertyValue('--polka-visited').trim(),
+        label:win.getComputedStyle(doc.getElementById('link-label')).color};
+      link.blur();
+      return paint;
+    }
+    for (const [theme,color,focus,visited] of [
+      ['light','rgb(7, 91, 71)','rgb(145, 82, 10)','#674478'],
+      ['dark','rgb(133, 215, 186)','rgb(246, 198, 111)','#d5b3eb'],
+      ['sepia','rgb(49, 91, 66)','rgb(131, 74, 16)','#704c64']
+    ]) {
+      await send({type:'style',settings:{...settings,theme}});
+      await mobile.waitForFunction(t => document.querySelector('#page iframe').contentDocument.documentElement.dataset.polkaPaper === t,theme);
+      const frame = await (await mobile.locator('#page iframe').elementHandle()).contentFrame();
+      assert.deepEqual(await frame.evaluate(linkPaint),
+        {color,underline:'underline',outline:'solid',focus,visited,label:color});
+    }
+    assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'place').length),1);
     await send({type:'style',settings:{...settings,fontPercent:145,fontFamily:'serif'}});
     await mobile.waitForFunction(() => {
       const style = document.querySelector('iframe')?.contentDocument.body.style;
@@ -159,15 +182,15 @@ async function main() {
       const stage = document.querySelector('#book-turn');
       return stage.dataset.effect === name && Number(stage.dataset.progress) > .025;
     },effect,{timeout:4000});
-    async function styling(effect,double=false) {
-      await send({type:'style',spread:double,settings:{...settings,pageTurn:effect}});
+    async function styling(effect,double=false,theme='light') {
+      await send({type:'style',spread:double,settings:{...settings,pageTurn:effect,theme}});
       // A following non-persistent jump provides a deterministic queue barrier.
       const n = await places();
       await send({type:'jump',locator:start.cfi,persist:false});
       await waitPlace(n+1);
     }
     for (const effect of ['slide','curl']) {
-      await styling(effect);
+      await styling(effect,false,effect === 'slide' ? 'dark' : 'sepia');
       const n = await places();
       await touchMove(375,270,-165,-12);
       await waitFrame(effect);
@@ -175,10 +198,12 @@ async function main() {
         const stage = document.querySelector('#book-turn'), under = document.querySelector('#preview');
         return {progress:Number(stage.dataset.progress),inside:under.inert && under.getAttribute('aria-hidden') === 'true',
           adjacent:Boolean(under.querySelector('iframe')?.contentDocument.querySelector('p')),
+          linkColor:under.querySelector('iframe').contentWindow.getComputedStyle(under.querySelector('iframe').contentDocument.getElementById('ref')).color,
           under:getComputedStyle(under).transform, paper:getComputedStyle(document.querySelector('#page')).transform,
           crease:getComputedStyle(document.querySelector('#back')).clipPath};
       });
       assert(geometry.progress > .25 && geometry.progress < .6 && geometry.adjacent && geometry.inside);
+      assert.equal(geometry.linkColor,effect === 'slide' ? 'rgb(133, 215, 186)' : 'rgb(49, 91, 66)');
       if (effect === 'slide') { assert.match(geometry.under,/matrix/); assert.match(geometry.paper,/matrix/); }
       else assert.match(geometry.crease,/^polygon\(/);
       if (captureDir) await mobile.screenshot({path:path.join(captureDir,'epub-'+effect+'.png')});
@@ -222,8 +247,14 @@ async function main() {
     await send({type:'link',locator:note.target}); await waitPlace(n+3);
     assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'linkOrigin').at(-1).locator),beforeNote.locator);
     await send({type:'jump',locator:beforeNote.locator}); await waitPlace(n+4);
-    await clickBookLink('seealso'); await waitPlace(n+5);
+    const externalRequests = [];
+    mobile.on('request',req => { if (req.url().startsWith('https://example.invalid/')) externalRequests.push(req.url()); });
+    await clickBookLink('external');
+    await clickBookLink('link-label'); await waitPlace(n+5);
     assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'linkOrigin').at(-1).locator),beforeNote.locator);
+    assert.equal(await mobile.evaluate(() => events.filter(e => e.type === 'linkOrigin').length),2);
+    assert.deepEqual(externalRequests,[]);
+    assert.equal(await mobile.evaluate(() => document.querySelector('#page iframe').sandbox.contains('allow-scripts')),false);
 
     const writes = () => mobile.evaluate(() => events.filter(e => e.type === 'place' && e.persist).length);
     const oldWrites = await writes();
