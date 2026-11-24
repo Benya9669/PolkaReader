@@ -8,6 +8,13 @@
   let marked = new Set();
   const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
   const send = (type, data = {}) => port.postMessage(JSON.stringify({type, ...data}));
+  function sizeViewport() {
+    // Android WebView can resolve both 100% and 100vh to zero in an embedded
+    // layout. Its actual visible viewport is available in CSS pixels here.
+    if (window.innerHeight > 0) document.documentElement.style.height = window.innerHeight + 'px';
+  }
+  window.addEventListener('resize', sizeViewport);
+  window.visualViewport?.addEventListener('resize', sizeViewport);
   function enqueue(work) {
     commands = commands.then(work).catch(() => send('error', {message: 'Не удалось открыть книгу или перейти к выбранному месту.'}));
   }
@@ -164,6 +171,8 @@
     const response = await fetch('publication.epub', {credentials: 'omit'});
     if (!response.ok) throw new Error('EPUB unavailable');
     book = ePub(await response.arrayBuffer(), {replacements: 'blobUrl'});
+    while (window.innerHeight <= 0) await frame();
+    sizeViewport();
     view = book.renderTo(pane, {width: pane.clientWidth, height: pane.clientHeight, spread: 'none',
       flow: 'paginated', allowScriptedContent: false, allowPopups: false});
     view.hooks.content.register(prepareContent);

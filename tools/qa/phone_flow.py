@@ -1,5 +1,6 @@
 """Exercise the installed APK on the dedicated emulator against serve_fixture.py."""
 import argparse
+import io
 import os
 import re
 import subprocess
@@ -47,6 +48,20 @@ class Device:
     def tap(self, node) -> None:
         x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.get("bounds")))
         self.adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+
+    def visible_epub_text(self, passage: str) -> None:
+        """An accessibility node can exist even when a zero-height WebView clips all its glyphs."""
+        from PIL import Image
+        self.find(passage)
+        node = next(n for n in self.nodes() if passage in n.get("text", ""))
+        bounds = tuple(map(int, re.findall(r"\d+", node.get("bounds", ""))))
+        assert len(bounds) == 4 and bounds[2] > bounds[0] and bounds[3] > bounds[1], "Пустая область абзаца"
+        capture = subprocess.check_output(self.target + ["exec-out", "screencap", "-p"])
+        with Image.open(io.BytesIO(capture)) as image:
+            histogram = image.crop(bounds).convert("L").histogram()
+        paper = max(range(256), key=histogram.__getitem__)
+        ink = sum(count for shade, count in enumerate(histogram) if abs(shade - paper) > 90)
+        assert ink >= 30, "WebView содержит абзац, но его текст не нарисован на экране"
 
     def field(self, index: int, text: str) -> None:
         if not re.fullmatch(r"[\w.:/-]+", text):
@@ -128,6 +143,7 @@ def main() -> None:
         d.find("Первая глава")
         d.rotate("0")
         d.find("Первая глава")
+        d.visible_epub_text("Пробная книга для проверки читалки.")
         print("EPUB restored after font change and rotation")
     elif args.stage == "offline":
         try:
@@ -142,6 +158,7 @@ def main() -> None:
                 candidates = [n for n in d.nodes() if n.get("text") == "Продолжить чтение"]
             d.tap(candidates[-1])
             d.find("Вторая глава")
+            d.visible_epub_text("Проверка восстановления позиции.")
             print("Offline cold start restored the second chapter")
         finally:
             d.airplane(False)

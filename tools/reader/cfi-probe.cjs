@@ -62,6 +62,9 @@ async function main() {
     const mobile = await browser.newPage({viewport:{width:360,height:520}});
     await mobile.goto(origin + '/index.html');
     await mobile.evaluate(() => {
+      // Simulate the zero-height root reported by an Android WebView embedded
+      // in a Compose layout, despite window.innerHeight reporting the viewport.
+      document.documentElement.style.height = '0px';
       const pair = new MessageChannel();
       window.events = [];
       window.port = pair.port1;
@@ -81,10 +84,12 @@ async function main() {
         const paragraph = range.startContainer.parentElement.closest('p');
         const rect = range.getBoundingClientRect(), outer = frame.getBoundingClientRect();
         const x = outer.left + rect.left, y = outer.top + rect.top;
-        return {id:paragraph.id, visible:x >= -2 && x <= innerWidth && y >= -2 && y <= innerHeight};
+        const hit = document.elementFromPoint(Math.max(0, x + 1), Math.max(0, y + 1));
+        return {id:paragraph.id, visible:x >= -2 && x <= innerWidth && y >= -2 && y <= innerHeight && hit === frame};
       }, cfi);
     }
     assert.deepEqual(await visibleAnchor(mobile,start.cfi), {id:start.paragraph,visible:true});
+    assert.equal(await mobile.evaluate(() => document.getElementById('page').clientHeight),520);
     assert.equal(await mobile.evaluate(() => events.find(e => e.type === 'place').persist), false);
     await send({type:'style',settings:{...settings,fontPercent:145}});
     await mobile.waitForFunction(() => document.querySelector('iframe')?.contentDocument.body.style.fontSize === '145%');
