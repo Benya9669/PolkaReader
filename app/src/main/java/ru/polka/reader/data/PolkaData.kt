@@ -2,9 +2,11 @@ package ru.polka.reader.data
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -37,6 +39,7 @@ class PolkaData private constructor(private val context: Context) {
     val active = current.asStateFlow()
     private val fileLocks = Array(32) { Mutex() }
     private val initializedDirectories = mutableSetOf<String>()
+    private val readingCache = ReadingCache(File(context.cacheDir, "reading"))
 
     private fun account(scope: String) = active.value?.takeIf { it.scope == scope }
         ?: throw ApiError(401, JSONObject().put("detail", "Выберите учётную запись"))
@@ -197,10 +200,41 @@ class PolkaData private constructor(private val context: Context) {
 
     fun downloads(scope: String) = dao.downloads(scope)
     fun lastOpened(scope: String) = dao.lastOpened(scope)
+    fun recentBook(scope: String) = dao.observeEntry(scope, "local:last-opened").map { it?.let(RecentBook::fromJson) }
 
     suspend fun markOpened(scope: String, fileId: Long) {
         account(scope)
-        dao.markOpened(scope, fileId, System.currentTimeMillis())
+        dao.download(scope, fileId)?.let { markOpened(it) }
+    }
+
+    suspend fun markOpened(copy: Download) {
+        account(copy.scope)
+        val stamp = System.currentTimeMillis()
+        db.withTransaction {
+            dao.markOpened(copy.scope, copy.fileId, stamp)
+            dao.cache(CatalogEntry(copy.scope, "local:last-opened", copy.recent(stamp).json()))
+        }
+    }
+
+    suspend fun <T> withReadingFile(scope: String, fileId: Long, workId: Long?,
+                                    onProgress: (Long, Long) -> Unit, read: suspend (Download, Boolean) -> T): T {
+        account(scope)
+        val offline = dao.download(scope, fileId)
+        if (offline != null && withContext(Dispatchers.IO) { File(offline.path).isFile }) return read(offline, true)
+        val book = if (workId != null) {
+            dao.cached(scope, "/books/$workId")?.let { parseBook(JSONObject(it)) }
+                ?.takeIf { cachedBook -> cachedBook.editions.any { ed -> ed.files.any { it.id == fileId && it.readable } } }
+                ?: book(scope, workId)
+        } else bookForFile(scope, fileId)
+        val edition = book.editions.firstOrNull { ed -> ed.files.any { it.id == fileId && it.readable } }
+            ?: throw IOException("Читаемый файл отсутствует в этом издании")
+        val file = edition.files.first { it.id == fileId }
+        return readingCache.withFile(scope, file, { target -> fetchChecked(scope, file, target, onProgress) }) { target ->
+            account(scope)
+            val copy = Download(scope, file.id, book.id, edition.id, book.title, book.authors, file.name,
+                file.format, target.absolutePath, file.size)
+            read(copy, false)
+        }
     }
 
     private fun directory(scope: String): File {
@@ -225,42 +259,46 @@ class PolkaData private constructor(private val context: Context) {
             if (old != null && File(old.path).let { it.isFile && it.length() == file.size }) return@withLock old
             val tmp = File.createTempFile("download-", ".part", dir)
             try {
-                val digest = MessageDigest.getInstance("SHA-256")
-                val count = call(scope, "GET", "/files/" + file.id) { response ->
-                    val input = response.body?.byteStream() ?: throw IOException("Сервер вернул пустой файл")
-                    var bytes = 0L
-                    var lastUpdate = 0L
-                    tmp.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        onProgress(0, file.size)
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            bytes += n
-                            if (bytes > file.size) throw IOException("Размер загрузки не совпадает с каталогом")
-                            output.write(buffer, 0, n)
-                            digest.update(buffer, 0, n)
-                            val now = android.os.SystemClock.elapsedRealtime()
-                            if (now - lastUpdate >= 120 || bytes == file.size) {
-                                onProgress(bytes, file.size)
-                                lastUpdate = now
-                            }
-                        }
-                        output.fd.sync()
-                    }
-                    bytes
-                }
-                if (count != file.size || !file.sha256.equals(digest.digest().hex(), ignoreCase = true))
-                    throw IOException("Скачанный файл не прошёл проверку размера или SHA-256. Повторите загрузку")
-                account(scope)
+                fetchChecked(scope, file, tmp, onProgress)
                 val dest = File(dir, "${file.id}.${file.format}")
                 if (!tmp.renameTo(dest)) throw IOException("Не удалось сохранить файл на устройстве")
                 Download(scope, file.id, book.id, edition.id, book.title, book.authors, file.name, file.format,
-                    dest.absolutePath, count).also { dao.save(it) }
+                    dest.absolutePath, file.size).also { dao.save(it) }
             } finally {
                 if (tmp.exists()) tmp.delete()
             }
         }
+    }
+
+    private suspend fun fetchChecked(scope: String, file: BookFile, destination: File, onProgress: (Long, Long) -> Unit) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val count = call(scope, "GET", "/files/${file.id}") { response ->
+            val input = response.body?.byteStream() ?: throw IOException("Сервер вернул пустой файл")
+            var bytes = 0L
+            var lastUpdate = 0L
+            destination.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                onProgress(0, file.size)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    bytes += n
+                    if (bytes > file.size) throw IOException("Размер загрузки не совпадает с каталогом")
+                    output.write(buffer, 0, n)
+                    digest.update(buffer, 0, n)
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastUpdate >= 120 || bytes == file.size) {
+                        onProgress(bytes, file.size)
+                        lastUpdate = now
+                    }
+                }
+                output.fd.sync()
+            }
+            bytes
+        }
+        if (count != file.size || !file.sha256.equals(digest.digest().hex(), ignoreCase = true))
+            throw IOException("Файл не прошёл проверку размера или SHA-256. Повторите загрузку")
+        account(scope)
     }
 
     suspend fun remove(scope: String, fileId: Long) = withContext(Dispatchers.IO) {

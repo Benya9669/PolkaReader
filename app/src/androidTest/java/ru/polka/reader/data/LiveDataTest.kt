@@ -38,6 +38,20 @@ class LiveDataTest {
         assertEquals(pdfBook.id, data.bookForFile(one.scope, file.id).id)
         if (edition.hasCover) assertTrue(data.cover(one.scope, edition.id)!!.length() > 0)
         data.remove(one.scope, file.id)
+        val temporaryPath = data.withReadingFile(one.scope, file.id, pdfBook.id, { _, _ -> }) { copy, permanent ->
+            assertFalse(permanent)
+            assertEquals(file.id, copy.fileId)
+            assertTrue(File(copy.path).toPath().startsWith(context.cacheDir.toPath()))
+            assertEquals(file.size, File(copy.path).length())
+            assertTrue(data.downloads(one.scope).first().none { it.fileId == file.id })
+            data.markOpened(copy)
+            assertEquals(copy.fileId, data.recentBook(one.scope).first()?.fileId)
+            copy.path
+        }
+        data.withReadingFile(one.scope, file.id, pdfBook.id, { _, _ -> error("Повторное получение готовой книги") }) { copy, permanent ->
+            assertFalse(permanent)
+            assertEquals(temporaryPath, copy.path)
+        }
         val damaged = file.copy(sha256 = "0".repeat(64))
         val wrongEdition = edition.copy(files = listOf(damaged))
         val mismatch = runCatching {

@@ -34,6 +34,9 @@ interface LibraryDao {
     @Query("SELECT json FROM catalog_cache WHERE scope = :scope AND path = :path")
     suspend fun cached(scope: String, path: String): String?
 
+    @Query("SELECT json FROM catalog_cache WHERE scope = :scope AND path = :path")
+    fun observeEntry(scope: String, path: String): Flow<String?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun cache(entry: CatalogEntry)
 
