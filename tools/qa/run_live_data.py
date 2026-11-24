@@ -10,18 +10,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--adb", default="adb")
+    parser.add_argument("--host-port", type=int, default=18763,
+                        help="Порт изолированного serve_fixture.py на компьютере")
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
         parser.error("Укажите отдельный тестовый эмулятор")
+    if not 1 <= args.host_port <= 65535:
+        parser.error("--host-port должен быть действительным TCP-портом")
     command = [args.adb, "-s", args.serial]
     password = os.environ.get("POLKA_QA_PASSWORD") or getpass.getpass("Пароль тестового сервера: ")
     port = "tcp:18763"
+    target_port = f"tcp:{args.host_port}"
     mappings = subprocess.check_output(command + ["reverse", "--list"], text=True).splitlines()
     mapped = [line.split()[-1] for line in mappings if len(line.split()) >= 2 and line.split()[-2] == port]
-    if mapped and mapped != [port]:
+    if mapped and mapped != [target_port]:
         parser.error("Порт эмулятора 18763 уже перенаправлен на другой порт")
     if not mapped:
-        subprocess.run(command + ["reverse", port, port], check=True)
+        subprocess.run(command + ["reverse", port, target_port], check=True)
     try:
         # The credential goes to run-as over stdin and never appears in a process argument.
         subprocess.run(command + ["shell", "-T", "run-as ru.polka.reader sh -c 'umask 077; mkdir -p cache && cat > cache/polka-live-qa'"],
