@@ -21,6 +21,12 @@
     #illustration button:focus-visible { outline:2px solid #efb667; }
     .image-surface { flex:1; min-height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; touch-action:none; }
     .image-surface img { max-width:100%; max-height:100%; user-select:none; pointer-events:none; }
+    .table-overlay {position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;background:Canvas;color:CanvasText;padding:12px}
+    .table-overlay button {align-self:flex-end;min-height:48px}
+    .table-overlay div {overflow:auto;flex:1}
+    .table-overlay table {border-collapse:separate;border-spacing:0}
+    .table-overlay td,.table-overlay th {padding:8px;border:1px solid GrayText;min-width:7em}
+    .table-overlay tr>:first-child {position:sticky;left:0;background:Canvas}
   </style>
   <script defer src="jszip.min.js"></script>
   <script defer src="epub.min.js"></script>

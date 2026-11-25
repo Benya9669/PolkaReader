@@ -51,6 +51,13 @@ data class BookSettings(
     val fontPercent: Int = 110, val lineHeight: Float = 1.5f, val marginDp: Int = 16,
     val theme: String = "light", val pageTurn: String = "slide", val spread: Boolean = true, val profile: String = "day",
     val fontFamily: String = "book",
+    val scrollBook: Boolean = false,
+    val hyphenate: Boolean = false,
+    val alignment: String = "book",
+    val columns: Boolean = false,
+    val coverAlone: Boolean = false,
+    val brightness: Int = -1,
+    val timeoutMinutes: Int = 0,
     val chapterHint: String = "off",
     val tapSide: String = "auto", val tapZone: Int = 23, val volumeTurn: Boolean = false,
 )
@@ -65,12 +72,18 @@ internal fun BookReader(
     onBookmark: (ReaderPlace) -> Unit, onSelection: (BookSelection) -> Unit, onShowMarks: () -> Unit,
     highlights: List<String> = emptyList(), status: String = "", jump: ReaderJump? = null,
     onProfile: (Boolean) -> Unit,
+    storageKey: String = file.key,
     pdfCrop: PdfCrop = PdfCrop(), onPdfCrop: (PdfCrop) -> Unit = {},
 ) = key(file.key) {
     val pdf = format.equals("pdf", ignoreCase = true)
     val accessibility = LocalContext.current.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     val motionEnabled = systemMotionEnabled()
     val effectiveSettings = if (motionEnabled) settings else settings.copy(pageTurn = "none")
+    val session = rememberReadingDesk(storageKey)
+    var referenceVisible by rememberSaveable { mutableStateOf(false) }
+    var lightOverride by remember { mutableStateOf<Int?>(null) }
+    var interaction by remember { mutableLongStateOf(0L) }
+    ReaderWindow(lightOverride ?: settings.brightness, settings.timeoutMinutes, interaction)
     var panels by rememberSaveable { mutableStateOf(true) }
     var menu by rememberSaveable { mutableStateOf("") }
     var chapters by remember { mutableStateOf(emptyList<Chapter>()) }
@@ -87,7 +100,7 @@ internal fun BookReader(
     var draftMargins by rememberSaveable { mutableStateOf("") }
     var sampleMargins by remember { mutableStateOf<(suspend () -> PdfCrop?)?>(null) }
     val displayedCrop = if (menu == "pdfCrop") PdfCrop.decode(draftMargins) else pdfCrop
-    VolumePaging(settings.volumeTurn && menu.isEmpty() && !illustrationOpen && control != null && place != null && error == null) { next ->
+    VolumePaging(settings.volumeTurn && !referenceVisible && menu.isEmpty() && !illustrationOpen && control != null && place != null && error == null) { next ->
         control?.invoke(ReaderAction(if (next) "next" else "previous"))
     }
     val currentPositionCallback by rememberUpdatedState(onPosition)
@@ -118,18 +131,20 @@ internal fun BookReader(
     }
     BackHandler {
         when {
+            referenceVisible -> referenceVisible = false
             illustrationOpen -> control?.invoke(ReaderAction("closeIllustration"))
             menu.isNotEmpty() -> menu = ""
             returnLocator != null -> goBackToReading()
             else -> onExit()
         }
     }
-    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().readerWindowGestures(settings.brightness, { lightOverride = it }, { lightOverride = null; onSettings(settings.copy(brightness = it)) }, { interaction = android.os.SystemClock.elapsedRealtime() })) {
+        val paneWidth = maxWidth
         val paperPanelHeight = maxHeight * 0.48f
         val cropPanelHeight = maxHeight * .58f
         val sideContents = maxWidth >= 840.dp && menu == "contents"
         val wideLandscape = maxWidth > maxHeight && maxWidth >= 840.dp && maxHeight >= 440.dp
-        val spread = settings.spread && wideLandscape && (!sideContents || maxWidth - 272.dp >= 840.dp)
+        val spread = !referenceVisible && !(if (pdf) settings.columns else settings.scrollBook) && settings.spread && wideLandscape && (!sideContents || maxWidth - 272.dp >= 840.dp)
         Row(Modifier.fillMaxSize()) {
             if (sideContents) {
                 Surface(Modifier.width(272.dp).fillMaxHeight(), tonalElevation = 2.dp) {
@@ -142,17 +157,17 @@ internal fun BookReader(
                     }
                 }
             }
-            Box(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxHeight()) {
                 val tap = { panels = !panels }
                 if (pdf) {
                     PdfPane(file, initial, zoom, effectiveSettings.pageTurn, spread, { zoom = it }, { control = it }, showPlace,
                         { totalPages = it }, tap, { error = it }, crop = displayedCrop,
-                        tapSide = settings.tapSide, tapZone = settings.tapZone, onCropSampler = { sampleMargins = it })
+                        tapSide = settings.tapSide, tapZone = settings.tapZone, onCropSampler = { sampleMargins = it }, columns = settings.columns, cover = settings.coverAlone, lineMarker = session.line, onLine = { session.mark(it) })
                 } else {
-                    EpubPane(file, initial, effectiveSettings, highlights, { control = it }, showPlace,
+                    key(settings.scrollBook) { EpubPane(file, place ?: initial, effectiveSettings, highlights, { control = it }, showPlace,
                         { chapters = it }, onSelection, tap, { error = it }, spread = spread,
                         onLinkNavigate = { rememberOrigin(it) }, inspection = inspection,
-                        onRemainder = { chapterHint = it }, onIllustration = { illustrationOpen = it })
+                        onRemainder = { chapterHint = it }, onIllustration = { illustrationOpen = it }, lineMarker = session.line, onLine = { session.mark(it) }) }
                 }
                 if (place == null && error == null) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -198,12 +213,13 @@ internal fun BookReader(
                                     if (pdf) {
                                         Tool(Icons.Default.FindInPage, "Перейти к странице", point != null) { menu = "page" }
                                         Tool(Icons.Default.Crop, "Поля PDF", point != null) { draftMargins = pdfCrop.encode(); menu = "pdfCrop" }
-                                        Tool(Icons.Default.ZoomOut, "Уменьшить масштаб", zoom > 0.65f) { zoom = (zoom - .25f).coerceAtLeast(.65f) }
-                                        Tool(Icons.Default.ZoomIn, "Увеличить масштаб", zoom < 3f) { zoom = (zoom + .25f).coerceAtMost(3f) }
+                                        Tool(Icons.Default.ZoomOut, "Уменьшить масштаб", !settings.columns && zoom > 0.65f) { zoom = (zoom - .25f).coerceAtLeast(.65f) }
+                                        Tool(Icons.Default.ZoomIn, "Увеличить масштаб", !settings.columns && zoom < 3f) { zoom = (zoom + .25f).coerceAtMost(3f) }
                                     } else {
                                         Tool(Icons.AutoMirrored.Filled.List, "Оглавление") { menu = if (sideContents) "" else "contents" }
                                         Tool(Icons.Default.TextFields, "Настройки текста") { menu = "style" }
                                     }
+                                    Tool(Icons.Default.Settings, "Удобство чтения") { menu = "comfort" }
                                     Tool(Icons.Default.BookmarkAdd, "Добавить закладку", point != null) { point?.let(onBookmark) }
                                     Tool(Icons.Default.Bookmarks, "Закладки и заметки", true, onShowMarks)
                                 }
@@ -235,7 +251,21 @@ internal fun BookReader(
                             .fillMaxWidth().heightIn(max = cropPanelHeight))
                 }
             }
+            if (referenceVisible && paneWidth >= 840.dp) Spacer(Modifier.width(paneWidth / 2))
         }
+        if (referenceVisible && session.reference.isNotBlank()) {
+            val width = if (maxWidth >= 840.dp) maxWidth / 2 else maxWidth
+            Surface(Modifier.align(Alignment.CenterEnd).width(width).fillMaxHeight(), tonalElevation = 4.dp) {
+                ReferencePane(file, pdf, session.reference, settings, pdfCrop, { session.pin(it) }, { referenceVisible = false })
+            }
+        }
+        val bright = lightOverride ?: settings.brightness
+        if (bright in 0..15) androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+            drawRect(androidx.compose.ui.graphics.Color.Black.copy(alpha = (16 - bright) * .034f))
+        }
+        if (menu == "comfort") ComfortDialog(settings, pdf, onSettings, { menu = "" },
+            { place?.let { session.pin(it.locator); referenceVisible = true }; menu = "" },
+            if (session.reference.isNotBlank()) ({ referenceVisible = true; menu = "" }) else null)
         if (menu == "contents" && !sideContents) AlertDialog(
             onDismissRequest = { menu = "" }, title = { Text("Оглавление") },
             text = { ChapterList(chapters) { goTo(it.href); menu = "" } },

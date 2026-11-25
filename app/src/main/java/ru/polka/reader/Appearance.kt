@@ -47,6 +47,13 @@ internal class Appearance(private val context: Context) {
             profile = if (night) "night" else "day",
             fontFamily = values[if (night) nightFamily else family] ?: "book",
             chapterHint = values[chapterHint] ?: "off",
+            scrollBook = values[booleanPreferencesKey("scrollBook")] ?: false,
+            hyphenate = values[booleanPreferencesKey("hyphenate")] ?: false,
+            alignment = values[stringPreferencesKey("alignment")] ?: "book",
+            columns = values[booleanPreferencesKey("columns")] ?: false,
+            coverAlone = values[booleanPreferencesKey("coverAlone")] ?: false,
+            brightness = values[intPreferencesKey("brightness")] ?: -1,
+            timeoutMinutes = values[intPreferencesKey("timeoutMinutes")] ?: 0,
             tapSide = values[tapSide] ?: "auto",
             tapZone = (values[tapZone] ?: 23).coerceIn(12, 36),
             volumeTurn = values[volumeTurn] ?: false,
@@ -75,6 +82,13 @@ internal class Appearance(private val context: Context) {
             it[pageTurn] = value.pageTurn
             it[wideSpread] = value.spread
             it[chapterHint] = value.chapterHint
+            it[booleanPreferencesKey("scrollBook")] = value.scrollBook
+            it[booleanPreferencesKey("hyphenate")] = value.hyphenate
+            it[stringPreferencesKey("alignment")] = value.alignment
+            it[booleanPreferencesKey("columns")] = value.columns
+            it[booleanPreferencesKey("coverAlone")] = value.coverAlone
+            it[intPreferencesKey("brightness")] = value.brightness
+            it[intPreferencesKey("timeoutMinutes")] = value.timeoutMinutes
             it[tapSide] = value.tapSide
             it[tapZone] = value.tapZone
             it[volumeTurn] = value.volumeTurn

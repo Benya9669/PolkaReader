@@ -47,6 +47,15 @@ internal class PdfPagePainter(private val density: Float) {
         return rect
     }
 
+    fun displayedArea(page: PdfPage, slot: Int, width: Int, height: Int, spread: Boolean,
+                      zoom: Float, panX: Float, panY: Float): RectF {
+        val r = RectF(position(page, slot, width.toFloat(), height.toFloat(), spread))
+        r.set((r.left - width / 2f) * zoom, (r.top - height / 2f) * zoom,
+            (r.right - width / 2f) * zoom, (r.bottom - height / 2f) * zoom)
+        r.offset(width / 2f + panX, height / 2f + panY)
+        return r
+    }
+
     private fun leaf(canvas: Canvas, pages: PdfPages, slot: Int, w: Float, h: Float, spread: Boolean) {
         val page = pages.pages.getOrNull(slot) ?: return
         val area = position(page, slot, w, h, spread)

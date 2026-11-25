@@ -79,7 +79,7 @@
   const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
   const rtl = () => view.settings.direction === 'rtl';
   const renditionOptions = () => ({width:pane.clientWidth, height:pane.clientHeight,
-    spread:spread ? 'always' : 'none', minSpreadWidth:1, flow:'paginated', allowScriptedContent:false, allowPopups:false});
+    spread:spread ? 'always' : 'none', minSpreadWidth:1, manager:settings?.scrollBook ? 'continuous' : 'default', flow:settings?.scrollBook ? 'scrolled' : 'paginated', allowScriptedContent:false, allowPopups:false});
 
   function resetTurn(t) {
     if (turn !== t) return;
@@ -224,6 +224,13 @@
   }
 
   async function move(direction) {
+    if (settings.scrollBook) {
+      const scroller = view.manager.container;
+      scroller.scrollBy(0, direction * scroller.clientHeight * .86);
+      await frame();
+      publish(await readLocation(), true);
+      return;
+    }
     const t = beginTurn(direction,pane.clientHeight * .8);
     if (t) await settle(t,true);
   }
@@ -301,6 +308,90 @@
   }
   document.body.addEventListener('click', e => { if (ready && e.target === document.body) edgeTap(e.clientX); });
 
+  function paperTypography(contents,s) {
+    const doc = contents.document;
+    let css = doc.getElementById('polka-type-rules');
+    if (!css) {
+      css = doc.createElement('style'); css.id = 'polka-type-rules'; doc.head.append(css);
+    }
+    const align = ['start','justify'].includes(s.alignment) ? 'text-align:'+s.alignment+'!important;' : '';
+    css.textContent = 'p,li,blockquote {' + align + (s.hyphenate ? 'hyphens:auto!important;-webkit-hyphens:auto!important;' : '') + '}';
+    if (s.hyphenate && !doc.documentElement.lang) doc.documentElement.lang = book.packaging?.metadata?.language || 'ru';
+  }
+  let tableOrigin, tableOverlay, scrollIntent = 0;
+  function closeTable() {
+    tableOverlay?.remove(); tableOverlay = null; stage.inert = false; tableOrigin?.focus({preventScroll:true}); tableOrigin = null; send('illustration',{open:false});
+  }
+  function openTable(source) {
+    if (tableOverlay) closeTable();
+    tableOrigin = source; stage.inert = true;
+    const overlay = document.createElement('section');
+    overlay.className = 'table-overlay'; overlay.setAttribute('role','dialog'); overlay.setAttribute('aria-modal','true'); overlay.setAttribute('aria-label','Таблица');
+    const close = document.createElement('button'); close.textContent = 'Закрыть таблицу'; close.onclick = closeTable;
+    const area = document.createElement('div'), table = document.createElement('table');
+    for (const row of source.rows) {
+      const copy = table.insertRow();
+      for (const cell of row.cells) {
+        const out = document.createElement(cell.tagName.toLowerCase());
+        out.colSpan = cell.colSpan; out.rowSpan = cell.rowSpan; out.textContent = cell.textContent;
+        copy.append(out);
+      }
+    }
+    area.append(table); overlay.append(close,area); document.body.append(overlay);
+    tableOverlay = overlay; send('illustration',{open:true}); close.focus();
+  }
+  function flashLine(locator) {
+    Promise.resolve().then(() => {
+      // Locate the rendered document instead of changing the EPUB DOM or its CFI offsets.
+      for (const c of view.getContents()) {
+        if (c.sectionIndex !== new ePub.CFI(locator).spinePos) continue;
+        let r;
+        try { r = c.range(locator); } catch { continue; }
+        if (!r || !r.startContainer) continue;
+        const mark = document.createElement('div'), frameRect = c.window.frameElement.getBoundingClientRect();
+        const rect = r.getBoundingClientRect();
+        if (!rect.height) continue;
+        Object.assign(mark.style,{position:'fixed',pointerEvents:'none',zIndex:8,
+          background:'rgba(239,182,103,.42)',left:frameRect.left+'px',width:frameRect.width+'px',
+          top:(frameRect.top+rect.top)+'px',height:rect.height+'px'});
+        document.body.append(mark); setTimeout(()=>mark.remove(),1800);
+      }
+    }).catch(()=>{});
+  }
+  function attachReadingAids(c) {
+    const doc = c.document;
+    paperTypography(c,settings);
+    for (const table of doc.querySelectorAll('table')) {
+      table.tabIndex = 0;
+      table.addEventListener('keydown', e => {
+        if (e.target === table && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault(); openTable(table);
+        }
+      });
+    }
+    let pair;
+    doc.addEventListener('touchstart',e=>{
+      scrollIntent = performance.now()+1800;
+      if (e.touches.length===2) {
+        const p=e.touches[0]; pair={x:p.clientX,y:p.clientY,time:performance.now()};
+      }
+    },{passive:true});
+    doc.addEventListener('wheel',()=>{scrollIntent=performance.now()+1800},{passive:true});
+    doc.addEventListener('touchmove',e=>{
+      scrollIntent=performance.now()+1800;
+      if (pair && Array.from(e.touches).some((p,i)=>i===0 && Math.hypot(p.clientX-pair.x,p.clientY-pair.y)>10)) pair=null;
+    },{passive:true});
+    doc.addEventListener('touchcancel',()=>{pair=null},{passive:true});
+    doc.addEventListener('touchend',()=>{
+      if (!pair) return;
+      const p=pair; pair=null;
+      if (performance.now()-p.time>420) return;
+      const range=doc.caretRangeFromPoint?.(p.x,p.y);
+      if (range?.startContainer.nodeType!==3) return;
+      const locator=c.cfiFromRange(range);
+      send('line',{locator}); publish({...lastPlace,locator},true); flashLine(locator);
+    },{passive:true});
+  }
   function prepareContent(contents) {
     secureContent(contents);
     const doc = contents.document, selected = () => contents.window.getSelection()?.isCollapsed === false;
@@ -316,6 +407,7 @@
         if (illustration.open(image)) e.preventDefault();
       });
     }
+    attachReadingAids(contents);
     let touch, ignoreClickUntil = 0;
     function cancel() {
       if (touch?.session) {
@@ -326,7 +418,7 @@
       touch = null;
     }
     doc.addEventListener('touchstart', e => {
-      if (e.touches.length !== 1) { cancel(); return; }
+      if (settings.scrollBook || e.touches.length !== 1) { cancel(); return; }
       // A new real tap is distinct from the synthetic click after the previous
       // swipe, even if the user immediately taps to turn back.
       ignoreClickUntil = 0;
@@ -374,6 +466,10 @@
       if (performance.now() < ignoreClickUntil || selected() || turn) {
         e.preventDefault(); e.stopImmediatePropagation(); return;
       }
+      const table = e.target.closest?.('table');
+      if (table && !e.target.closest('a,button')) {
+        e.preventDefault(); e.stopImmediatePropagation(); openTable(table); return;
+      }
       const link = e.target.closest?.('a[href]');
       const image = e.target.closest?.('img,svg');
       if (image && illustration.open(image)) {
@@ -390,6 +486,7 @@
   }
 
   function styleText(rendition,s) {
+    for (const contents of rendition.getContents()) paperTypography(contents,s);
     rendition.themes.fontSize(s.fontPercent + '%');
     const custom = s.fontFamily === 'serif' || s.fontFamily === 'sans-serif';
     if (custom) rendition.themes.override('font-family',s.fontFamily,true);
@@ -427,7 +524,7 @@
   async function reflow(style, double = spread) {
     if (!ready) return;
     if (turn) resetTurn(turn);
-    if (style && double === spread && ['fontPercent','fontFamily','marginDp','lineHeight','theme']
+    if (style && double === spread && ['fontPercent','fontFamily','marginDp','lineHeight','theme','hyphenate','alignment']
       .every(key => settings[key] === style[key])) {
       // Handedness, hotkeys and turn effects do not change the pagination.
       const changedHint = settings.chapterHint !== style.chapterHint;
@@ -509,6 +606,7 @@
     sizeViewport();
     spread = Boolean(config.spread);
     stage.dataset.spread = String(spread);
+    settings = config.settings;
     view = book.renderTo(pane,renditionOptions());
     view.hooks.content.register(prepareContent);
     view.on('displayError', () => send('error', {message: 'Не удалось отобразить раздел EPUB.'}));
@@ -526,6 +624,19 @@
     ready = true;
     publish(config.initial?.locator ? config.initial : rendered, false);
     highlights(config.highlights || []);
+    if (config.line && config.line === config.initial?.locator) flashLine(config.line);
+    if (settings.scrollBook) {
+      let timer;
+      const container = view.manager.container;
+      container.addEventListener('scroll', () => {
+        if (!ready || navigating || performance.now() > scrollIntent) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => enqueue(async () => {
+          const p = await readLocation();
+          if (p.locator !== anchor) publish(p,true);
+        }), 90);
+      }, {passive:true});
+    }
     let width = pane.clientWidth, height = pane.clientHeight;
     new ResizeObserver(() => {
       if (pane.clientWidth === width && pane.clientHeight === height) return;
@@ -547,7 +658,7 @@
       if (action.type === 'search') return explorer?.search(action.query || '',action.id);
       if (action.type === 'previewPosition') return explorer?.preview(action.percentage,action.id);
       if (action.type === 'cancelInspection') return explorer?.cancel();
-      if (action.type === 'closeIllustration') return illustration.close();
+      if (action.type === 'closeIllustration') return tableOverlay ? closeTable() : illustration.close();
       if (turn && (action.type === 'style' || action.type === 'jump' || action.type === 'link')) resetTurn(turn);
       enqueue(async () => {
         switch (action.type) {

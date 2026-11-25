@@ -26,7 +26,7 @@ private const val ENTRY = "$ORIGIN/reader/index.html"
 private fun BookSettings.toJson() = JSONObject().put("fontPercent", fontPercent)
     .put("lineHeight", lineHeight.toDouble()).put("marginDp", marginDp).put("theme", theme).put("pageTurn", pageTurn)
     .put("fontFamily", fontFamily).put("tapSide", tapSide).put("tapZone", tapZone)
-    .put("chapterHint", chapterHint)
+    .put("chapterHint", chapterHint).put("scrollBook", scrollBook).put("hyphenate", hyphenate).put("alignment", alignment)
 
 private fun ReaderPlace.toJson() = JSONObject().put("locator", locator).put("percentage", percentage).put("chapter", chapter)
 
@@ -97,6 +97,7 @@ internal fun EpubPane(
     onTap: () -> Unit, onError: (String) -> Unit,
     spread: Boolean = false, onLinkNavigate: (ReaderPlace) -> Unit = {},
     inspection: ReaderInspection, onRemainder: (String) -> Unit, onIllustration: (Boolean) -> Unit,
+    lineMarker: String = "", onLine: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val currentStyle by rememberUpdatedState(style)
@@ -104,6 +105,7 @@ internal fun EpubPane(
     val currentSpread by rememberUpdatedState(spread)
     val linkNavigate by rememberUpdatedState(onLinkNavigate)
     val showHint by rememberUpdatedState(onRemainder)
+    val saveLine by rememberUpdatedState(onLine)
     val showImage by rememberUpdatedState(onIllustration)
     val place by rememberUpdatedState(onPlace)
     val tap by rememberUpdatedState(onTap)
@@ -135,12 +137,13 @@ internal fun EpubPane(
                             "connected" -> {
                                 port = channel
                                 send(JSONObject().put("type", "open").put("initial", initial?.toJson())
-                                    .put("streaming", file.archive != null)
+                                    .put("line", lineMarker).put("streaming", file.archive != null)
                                     .put("settings", currentStyle.toJson()).put("spread", currentSpread).put("highlights", JSONArray(currentHighlights)))
                                 control { action -> send(JSONObject().put("type", action.type)
                                     .put("locator", action.locator).put("percentage", action.percentage).put("persist", action.persist)
                                     .put("id", action.requestId).put("query", action.query)) }
                             }
+                            "line" -> event.optString("locator").takeIf { it.startsWith("epubcfi(") && it.length <= 4000 }?.let(saveLine)
                             "place" -> event.toPlace()?.let { place(it, event.optBoolean("persist")) }
                             "searchResults", "positionPreview" -> inspection.receive(event)
                             "chapterRemainder" -> showHint(when {

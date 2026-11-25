@@ -131,7 +131,7 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
             onExit, { bookmark = it }, { selection = it }, { marks = true },
             annotations.filter { !it.removed && it.quote.isNotEmpty() }.map { it.locator }.distinct(), status, jump,
             onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } },
-            pdfCrop = pdfCrop, onPdfCrop = { crop -> coroutine.launch { appearance.saveCrop(scope, fileId, crop) } })
+            storageKey = "$scope/$fileId", pdfCrop = pdfCrop, onPdfCrop = { crop -> coroutine.launch { appearance.saveCrop(scope, fileId, crop) } })
     }
     val row = local
     if (row?.conflictVersion != null) {
@@ -184,7 +184,7 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
     var error by remember { mutableStateOf<String?>(null) }
     val coroutine = rememberCoroutineScope()
     AlertDialog(onDismissRequest = close, title = { Text(title) }, text = { Column {
-        quote?.let { Text(it.take(320), style = MaterialTheme.typography.bodySmall) }
+        quote?.let { Text(it.take(320), style = MaterialTheme.typography.bodySmall); WordDictionary(it, close) }
         OutlinedTextField(value, { value = it.take(limit) }, label = { Text(label) })
         error?.let { Text("Не синхронизировано. $it", color = MaterialTheme.colorScheme.error) }
     } }, confirmButton = { TextButton(onClick = {
