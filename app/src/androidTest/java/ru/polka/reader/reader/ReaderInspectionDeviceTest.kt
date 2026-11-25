@@ -81,6 +81,62 @@ class ReaderInspectionDeviceTest {
         } finally { file.delete() }
     }
 
+    @Test fun offlineDictionaryIsReplacedOnlyByValidImport() = runBlocking {
+        val root = java.nio.file.Files.createTempDirectory(ui.activity.cacheDir.toPath(), "dictionary-test").toFile()
+        val context = object : android.content.ContextWrapper(ui.activity) {
+            override fun getFilesDir() = root
+        }
+        val words = File(root, "test.tsv")
+        words.writeText("Полка\tМесто для книг\n")
+        importWords(context, android.net.Uri.fromFile(words))
+        assertEquals("Место для книг", lookupWord(context, "полка"))
+        words.writeText("Недействительный файл")
+        assertTrue(runCatching { importWords(context, android.net.Uri.fromFile(words)) }.isFailure)
+        assertEquals("Место для книг", lookupWord(context, "полка"))
+        assertTrue(lookupWord(context, "самолёт").contains("отсутствует"))
+    }
+
+    @Test fun coverPairsAndWindowOverrides() {
+        assertEquals(listOf(1,1,3,3,5), (1..5).map { firstPage(it,true,false) })
+        assertEquals(listOf(1,2,2,4,4), (1..5).map { firstPage(it,true,true) })
+        val window = ui.activity.window
+        val previous = window.attributes.screenBrightness
+        ui.runOnUiThread { ui.activity.setContent { ReaderWindow(27, 5, 0) } }
+        ui.waitForIdle()
+        assertEquals(.27f, window.attributes.screenBrightness, .005f)
+        assertTrue(window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0)
+        ui.runOnUiThread { ui.activity.setContent {} }
+        ui.waitForIdle()
+        assertEquals(previous, window.attributes.screenBrightness, .005f)
+    }
+
+    @Test fun referenceAndColumnStepsLeavePrimaryPageAlone() {
+        val file = pdf(true)
+        val source = ReaderSource.Local(file)
+        val saved = CopyOnWriteArrayList<String>()
+        try {
+            ui.runOnUiThread {
+                ui.activity.setContent {
+                    var prefs = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(BookSettings(pageTurn = "none")) }
+                    BookReader(source, "pdf", "Разворот", null, prefs.value, { prefs.value = it }, { saved.add(it.locator) },
+                        {}, {}, {}, {}, onProfile = {})
+                }
+            }
+            awaitText("Стр. 1 из 3")
+            ui.onNodeWithContentDescription("Удобство чтения").performClick()
+            ui.onNodeWithText("Закрепить это место рядом").performScrollTo().performClick()
+            ui.onNodeWithText("Вперёд").performClick()
+            ui.onNodeWithText("К чтению").performClick()
+            assertTrue(saved.isEmpty())
+            ui.onNodeWithContentDescription("Удобство чтения").performClick()
+            ui.onNodeWithText("Читать по двум колонкам").performClick()
+            ui.onNodeWithText("Готово").performClick()
+            ui.onNodeWithContentDescription("Следующая страница").performClick()
+            assertTrue(saved.isEmpty())
+            awaitText("Стр. 1 из 3")
+        } finally { file.delete() }
+    }
+
     @Test fun imageOnlyPdfHasThumbnailAndExplainsItsMissingTextLayer() = runBlocking {
         val file = pdf(false)
         try {

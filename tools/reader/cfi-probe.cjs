@@ -436,6 +436,38 @@ async function main() {
     await send({type:'closeIllustration'});
     await mobile.waitForFunction(() => document.querySelector('#illustration').hidden);
     assert.equal(await places(),beforeInspection+1);
+    await mobile.evaluate(() => {
+      const doc = document.querySelector('#page iframe').contentDocument;
+      const table = doc.createElement('table');
+      table.insertRow().insertCell().textContent = 'Столбец';
+      doc.body.append(table); table.rows[0].cells[0].click();
+    });
+    assert.equal(await mobile.locator('.table-overlay td').innerText(),'Столбец');
+    await mobile.getByText('Закрыть таблицу').click();
+    assert.equal(await places(),beforeInspection+1);
+    await mobile.goto(origin + '/index.html');
+    await mobile.evaluate(() => {
+      const channel = new MessageChannel();
+      window.events = []; window.port = channel.port1;
+      port.onmessage = e => events.push(JSON.parse(e.data));
+      window.postMessage('polka-reader',location.origin,[channel.port2]);
+    });
+    await mobile.waitForFunction(() => events.some(e => e.type === 'connected'));
+    await send({type:'open',initial:{locator:start.cfi,percentage:.1},settings:{...settings,scrollBook:true,hyphenate:true,alignment:'justify'}});
+    await waitPlace(1);
+    assert.equal(await mobile.evaluate(()=>events.find(e=>e.type==='place').locator),start.cfi);
+    assert.equal(await mobile.frameLocator('#page iframe').first().locator('p').first().evaluate(p=>getComputedStyle(p).textAlign),'justify');
+    await send({type:'next'}); await waitPlace(2);
+    assert.notEqual(await mobile.evaluate(()=>events.filter(e=>e.type==='place').at(-1).locator),start.cfi);
+    const previousScroll = await places();
+    await mobile.mouse.move(230,180);
+    await mobile.mouse.wheel(0,420);
+    await waitPlace(previousScroll+1);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:145,y:143},{x:190,y:143}]});
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await mobile.waitForFunction(()=>events.some(e=>e.type==='line'),null,{timeout:5000});
+    assert.match(await mobile.evaluate(()=>events.find(e=>e.type==='line').locator),/^epubcfi/);
+    console.log('PASS full-screen table, typography, continuous EPUB restore and movement');
     console.log('PASS cross-chapter, cross-inline EPUB search, limited results, noncommitting exact preview, chapter hints and image zoom preserve CFI');
   } finally {
     await browser?.close();
