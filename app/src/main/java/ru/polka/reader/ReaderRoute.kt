@@ -131,6 +131,7 @@ private fun ReaderRoute(account: Account, data: PolkaData, sync: ProgressSync, c
             onExit, { bookmark = it }, { selection = it }, { marks = true },
             annotations.filter { !it.removed && it.quote.isNotEmpty() }.map { it.locator }.distinct(), status, jump,
             onProfile = { night -> coroutine.launch { appearance.selectProfile(night) } },
+            onRepairPercentage = { sync.repairPercentage(scope, fileId, it.locator, it.percentage) },
             storageKey = "$scope/$fileId", pdfCrop = pdfCrop, onPdfCrop = { crop -> coroutine.launch { appearance.saveCrop(scope, fileId, crop) } })
     }
     val row = local

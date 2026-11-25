@@ -98,6 +98,7 @@ internal fun EpubPane(
     spread: Boolean = false, onLinkNavigate: (ReaderPlace) -> Unit = {},
     inspection: ReaderInspection, onRemainder: (String) -> Unit, onIllustration: (Boolean) -> Unit,
     lineMarker: String = "", onLine: (String) -> Unit = {},
+    onRepairPercentage: (ReaderPlace) -> Unit = {},
 ) {
     val context = LocalContext.current
     val currentStyle by rememberUpdatedState(style)
@@ -106,6 +107,7 @@ internal fun EpubPane(
     val linkNavigate by rememberUpdatedState(onLinkNavigate)
     val showHint by rememberUpdatedState(onRemainder)
     val saveLine by rememberUpdatedState(onLine)
+    val repairPercentage by rememberUpdatedState(onRepairPercentage)
     val showImage by rememberUpdatedState(onIllustration)
     val place by rememberUpdatedState(onPlace)
     val tap by rememberUpdatedState(onTap)
@@ -144,6 +146,7 @@ internal fun EpubPane(
                                     .put("id", action.requestId).put("query", action.query)) }
                             }
                             "line" -> event.optString("locator").takeIf { it.startsWith("epubcfi(") && it.length <= 4000 }?.let(saveLine)
+                            "repairPercentage" -> event.toPlace()?.let(repairPercentage)
                             "place" -> event.toPlace()?.let { place(it, event.optBoolean("persist")) }
                             "searchResults", "positionPreview" -> inspection.receive(event)
                             "chapterRemainder" -> showHint(when {

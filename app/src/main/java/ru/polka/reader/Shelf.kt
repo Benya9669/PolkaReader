@@ -35,7 +35,7 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import kotlin.math.roundToInt
 
-internal fun percent(value: Double) = "${(value.coerceIn(0.0, 1.0) * 100).roundToInt()} %"
+internal fun percent(value: Double) = if (value > 0 && value < .01) "<1 %" else "${(value.coerceIn(0.0, 1.0) * 100).roundToInt()} %"
 internal fun placeLabel(point: ReadingPoint): String =
     listOfNotNull(point.chapter ?: point.locator.toLongOrNull()?.let { "Страница $it" }, percent(point.percentage)).joinToString(" · ")
 

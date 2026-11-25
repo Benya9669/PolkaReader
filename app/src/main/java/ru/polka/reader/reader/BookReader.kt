@@ -41,7 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ru.polka.reader.data.ReaderSource
-import kotlin.math.roundToInt
+import ru.polka.reader.percent
 
 data class ReaderPlace(val locator: String, val percentage: Double, val chapter: String? = null)
 data class ReaderJump(val id: Long, val locator: String? = null, val percentage: Double? = null,
@@ -73,6 +73,7 @@ internal fun BookReader(
     highlights: List<String> = emptyList(), status: String = "", jump: ReaderJump? = null,
     onProfile: (Boolean) -> Unit,
     storageKey: String = file.key,
+    onRepairPercentage: (ReaderPlace) -> Unit = {},
     pdfCrop: PdfCrop = PdfCrop(), onPdfCrop: (PdfCrop) -> Unit = {},
 ) = key(file.key) {
     val pdf = format.equals("pdf", ignoreCase = true)
@@ -167,7 +168,8 @@ internal fun BookReader(
                     key(settings.scrollBook) { EpubPane(file, place ?: initial, effectiveSettings, highlights, { control = it }, showPlace,
                         { chapters = it }, onSelection, tap, { error = it }, spread = spread,
                         onLinkNavigate = { rememberOrigin(it) }, inspection = inspection,
-                        onRemainder = { chapterHint = it }, onIllustration = { illustrationOpen = it }, lineMarker = session.line, onLine = { session.mark(it) }) }
+                        onRemainder = { chapterHint = it }, onIllustration = { illustrationOpen = it }, lineMarker = session.line,
+                        onLine = { session.mark(it) }, onRepairPercentage = onRepairPercentage) }
                 }
                 if (place == null && error == null) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -200,7 +202,7 @@ internal fun BookReader(
                                     }
                                     val location = if (pdf && point != null) "Стр. ${point.locator} из $totalPages"
                                         else point?.chapter.orEmpty()
-                                    Text(listOf(location, point?.let { "${(it.percentage * 100).roundToInt()}%" }.orEmpty())
+                                    Text(listOf(location, point?.let { percent(it.percentage) }.orEmpty())
                                         .filter { it.isNotBlank() }.joinToString(" · "), Modifier.weight(1f), maxLines = 2,
                                         overflow = TextOverflow.Ellipsis)
                                     Tool(Icons.Default.Tune, "Просмотреть страницы", point != null) { menu = "preview" }

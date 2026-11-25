@@ -98,6 +98,15 @@ class ProgressSync private constructor(context: Context) {
             schedule(scope, fileId, QUIET_MS)
         }
 
+    fun repairPercentage(scope: String, fileId: Long, locator: String, fraction: Double) {
+        jobs.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (writes.withLock { ledger.repairPercentage(scope, fileId, locator, fraction) }) {
+                enqueue(scope, fileId)
+                schedule(scope, fileId, QUIET_MS)
+            }
+        }
+    }
+
     /** Foreground attempt also works on a home Wi-Fi network without validated internet. */
     fun flush(scope: String, fileId: Long) {
         jobs.launch {

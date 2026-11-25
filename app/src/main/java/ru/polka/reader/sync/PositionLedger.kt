@@ -35,6 +35,14 @@ internal class PositionLedger(private val db: ReaderDatabase) {
         }
     }
 
+    suspend fun repairPercentage(scope: String, fileId: Long, locator: String, fraction: Double): Boolean = db.withTransaction {
+        val row = dao.get(scope, fileId) ?: return@withTransaction false
+        if (!locator.startsWith("epubcfi(") || row.point.locator != locator || row.point.percentage != 0.0 ||
+            row.conflictVersion != null || !(fraction > 0 && fraction <= 1)) return@withTransaction false
+        dao.put(row.copy(point = row.point.copy(percentage = fraction), revision = row.revision + 1))
+        true
+    }
+
     /** Returns true when a durable worker must be scheduled for this edit. */
     suspend fun edit(scope: String, fileId: Long, point: ReadingPoint, device: String, force: Boolean): Boolean =
         db.withTransaction {

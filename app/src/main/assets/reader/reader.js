@@ -57,14 +57,42 @@
     return label;
   }
 
+  const textOffsets = new WeakMap();
+  function progressAt(cfi, pageFraction = 0) {
+    const index = new ePub.CFI(cfi).spinePos;
+    const sectionCount = book.spine.length;
+    if (!Number.isInteger(index) || index < 0 || index >= sectionCount) return null;
+    if (book.locations.length() > 1) return book.locations.percentageFromCfi(cfi);
+    const contents = view.getContents().find(item => item.sectionIndex === index);
+    if (!contents) return null;
+    const doc = contents.document;
+    let range;
+    try { range = contents.range(cfi); } catch { return null; }
+    if (!range) return null;
+    let offsets = textOffsets.get(doc);
+    if (!offsets) {
+      offsets = {starts:new WeakMap(), total:0};
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.data.trim() || node.parentElement?.closest('script,style,[hidden]')) continue;
+        offsets.starts.set(node, offsets.total);
+        offsets.total += node.length;
+      }
+      textOffsets.set(doc, offsets);
+    }
+    const start = offsets.starts.get(range.startContainer);
+    const fraction = start === undefined ? pageFraction : (start + range.startOffset) / offsets.total;
+    return (index + Math.min(1, Math.max(0, fraction))) / sectionCount;
+  }
+
   async function readLocation() {
     await frame();
     await frame();
     const loc = await view.currentLocation();
     if (!loc?.start?.cfi) throw new Error('Empty EPUB location');
     const {start} = loc;
-    const section = start.index + (start.displayed.page - 1) / Math.max(1, start.displayed.total);
-    const percent = loc.atEnd ? 1 : start.percentage ?? section / Math.max(1, book.spine.length);
+    const within = (start.displayed.page - 1) / Math.max(1, start.displayed.total || 1);
+    const percent = loc.atEnd ? 1 : progressAt(start.cfi, within) ?? (start.index + within) / book.spine.length;
     return {locator: start.cfi, percentage: Math.max(0, Math.min(1, percent)), chapter: chapterAt(start)};
   }
 
@@ -389,7 +417,7 @@
       const range=doc.caretRangeFromPoint?.(p.x,p.y);
       if (range?.startContainer.nodeType!==3) return;
       const locator=c.cfiFromRange(range);
-      send('line',{locator}); publish({...lastPlace,locator},true); flashLine(locator);
+      send('line',{locator}); publish({...lastPlace,locator,percentage:progressAt(locator) ?? lastPlace.percentage},true); flashLine(locator);
     },{passive:true});
   }
   function prepareContent(contents) {
@@ -565,7 +593,10 @@
     }
     await view.display(target);
     const place = await readLocation();
-    if (target.startsWith('epubcfi(')) place.locator = target;
+    if (target.startsWith('epubcfi(')) {
+      place.locator = target;
+      place.percentage = progressAt(target) ?? place.percentage;
+    }
     if (action.link && origin) send('linkOrigin',origin);
     publish(place, action.persist !== false);
   }
@@ -622,7 +653,15 @@
     await view.display(config.initial?.locator || undefined);
     const rendered = await readLocation();
     ready = true;
-    publish(config.initial?.locator ? config.initial : rendered, false);
+    let restored = config.initial?.locator ? config.initial : rendered;
+    if (config.initial?.locator && config.initial.percentage === 0) {
+      const corrected = progressAt(config.initial.locator);
+      if (corrected > 0) {
+        restored = {...config.initial, percentage:corrected};
+        send('repairPercentage',restored);
+      }
+    }
+    publish(restored, false);
     highlights(config.highlights || []);
     if (config.line && config.line === config.initial?.locator) flashLine(config.line);
     if (settings.scrollBook) {
