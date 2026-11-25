@@ -77,7 +77,7 @@ async function main() {
     await mobile.waitForFunction(() => events.some(e => e.type === 'connected'));
     const send = msg => mobile.evaluate(m => port.postMessage(JSON.stringify(m)), msg);
     const settings = {fontPercent:110, lineHeight:1.5, marginDp:16, theme:'light'};
-    await send({type:'open',initial:{locator:start.cfi,percentage:0.1,chapter:'Глава'},settings});
+    await send({type:'open',initial:{locator:start.cfi,percentage:0,chapter:'Глава'},settings});
     const waitPlace = count => mobile.waitForFunction(n => events.filter(e => e.type === 'place').length >= n, count, {timeout:15000});
     await waitPlace(1);
     async function visibleAnchor(page, cfi) {
@@ -94,6 +94,9 @@ async function main() {
     assert.deepEqual(await visibleAnchor(mobile,start.cfi), {id:start.paragraph,visible:true});
     assert.equal(await mobile.evaluate(() => document.getElementById('page').clientHeight),520);
     assert.equal(await mobile.evaluate(() => events.find(e => e.type === 'place').persist), false);
+    const repair = await mobile.evaluate(() => events.find(e => e.type === 'repairPercentage'));
+    assert.equal(repair.locator, start.cfi);
+    assert(repair.percentage > 0 && repair.percentage < 1);
     function linkPaint() {
       const doc = document;
       const link = doc.getElementById('ref'), win = doc.defaultView;
@@ -143,6 +146,9 @@ async function main() {
     const newParagraph = await visibleAnchor(mobile,end.locator);
     assert.notEqual(newParagraph.id,start.paragraph);
     assert.equal(end.persist,true);
+    const turns = await mobile.evaluate(() => events.filter(e => e.type === 'place' && e.persist));
+    assert(turns[0].percentage > 0 && turns[1].percentage > turns[0].percentage,
+      'Two turns within the first chapter must advance progression without generating a whole-book index');
     await web.evaluate(cfi => view.display(cfi),end.locator);
     assert.deepEqual(await visibleAnchor(web,end.locator), {id:newParagraph.id,visible:true});
     const marked = await web.evaluate(() => {

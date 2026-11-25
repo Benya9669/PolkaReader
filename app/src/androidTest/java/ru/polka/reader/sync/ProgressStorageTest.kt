@@ -19,6 +19,26 @@ class ProgressStorageTest {
         try { action(this) } finally { close() }
     }
 
+    @Test fun repairPreservesExactPositionAndSkipsStaleOrConflictingRows() = runBlocking {
+        Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build().withDatabase { db ->
+            val ledger = PositionLedger(db)
+            val point = ReadingPoint("epubcfi(/6/2!/4/2/1:42)", 0.0, "Акт первый")
+            ledger.restore("one", 1, ServerProgress(8, point))
+            val before = db.progressDao().get("one", 1)!!
+            assertFalse(ledger.repairPercentage("two", 1, point.locator, .12))
+            assertFalse(ledger.repairPercentage("one", 1, "epubcfi(/6/4!/4/2/1:0)", .12))
+            assertTrue(ledger.repairPercentage("one", 1, point.locator, .12))
+            val after = db.progressDao().get("one", 1)!!
+            assertEquals(point.copy(percentage = .12), after.point)
+            assertEquals(before.lastReadAt, after.lastReadAt)
+            assertEquals(8L, after.serverVersion)
+            assertTrue(after.dirty)
+            assertFalse(ledger.repairPercentage("one", 1, point.locator, .13))
+            db.progressDao().put(before.copy(conflictVersion = 9))
+            assertFalse(ledger.repairPercentage("one", 1, point.locator, .12))
+        }
+    }
+
     @Test fun preloadingDownloadsUsesReadingTimeInsteadOfDownloadOrder() = runBlocking {
         Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build().withDatabase { db ->
             val ledger = PositionLedger(db)
